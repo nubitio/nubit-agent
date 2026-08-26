@@ -28,3 +28,15 @@ only through `NUBIT_AGENT_LISTEN_ADDR`; configure persistent state with
 - The future control-plane transport uses mTLS and an agent-initiated connection.
 - Privileged hosting operations are added one command type at a time with payload
   validation, tests, least privilege, and rollback behavior.
+
+## Debian 12 web profile
+
+The first supported profile is Debian 12 with Caddy, PHP-FPM, PostgreSQL, and native
+SFTP through OpenSSH. Review its actions before running it:
+
+```bash
+sudo sh scripts/install.sh --dry-run --profile web
+sudo sh scripts/install.sh --profile web
+```
+
+It does not yet enroll the server, configure sites, or install mail/FTP services.
