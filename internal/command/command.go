@@ -7,6 +7,7 @@ import (
 )
 
 const SystemPing = "system.ping"
+const SiteCreate = "site.create"
 
 type Command struct {
 	ID             string          `json:"id"`

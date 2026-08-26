@@ -64,13 +64,18 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		return result, nil
 	}
 
-	if command.Type != SystemPing {
+	var output []byte
+	var err error
+	switch command.Type {
+	case SystemPing:
+		output, err = json.Marshal(map[string]string{"receivedAt": time.Now().UTC().Format(time.RFC3339)})
+	case SiteCreate:
+		site, parseErr := parseSiteCreate(command.Payload)
+		if parseErr != nil { return Result{}, parseErr }
+		output, err = json.Marshal(map[string]string{"domain": site.Domain, "systemUser": site.SystemUser, "documentRoot": "/srv/nubit/sites/" + site.Domain + "/public", "status": "planned"})
+	default:
 		return Result{}, errors.New("unsupported command type")
 	}
-
-	output, err := json.Marshal(map[string]string{
-		"receivedAt": time.Now().UTC().Format(time.RFC3339),
-	})
 	if err != nil {
 		return Result{}, err
 	}
