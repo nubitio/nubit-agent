@@ -52,10 +52,28 @@ management are separate later profiles.
 - ECDSA enrollment, locally held private key, TLS 1.3 client identity, and
   automatic certificate renewal before expiry.
 - Drift inspection through `system.reconcile`.
+- CI on every push and pull request: gofmt, vet, race-enabled tests, cross
+  builds for linux/amd64 and linux/arm64, and shellcheck plus a dry run of the
+  installer.
+- Tagged releases publishing verified `linux/amd64` and `linux/arm64` binaries
+  with `SHA256SUMS`, gated on a green suite.
+- `scripts/install.sh` installing the binary, systemd unit and state
+  directories, verifying checksums before writing anything.
+- Checksum-verified self-update that restarts only between polls, never with a
+  command in flight.
 - Site suspension, resumption, alias domains, and recoverable confirmed deletion.
 - Public-key SFTP lifecycle with restricted OpenSSH configuration.
 - PostgreSQL create, password rotation, and confirmed delete operations scoped
   to persistent site ownership.
+
+## Release integrity
+
+Release assets are verified against `SHA256SUMS` published alongside them. That
+proves the download is intact; it does not prove the release is authentic, since
+the checksum file shares a trust root with the binary. Signing release artifacts
+and verifying the signature in both the installer and the self-updater is the
+next step for supply-chain integrity, and should land before the agent runs on
+servers Nubit does not operate.
 
 ## Immediate slice: control-plane transport hardening
 

@@ -144,3 +144,67 @@ func TestPollStopsWhenContextIsCancelled(t *testing.T) {
 		t.Fatal("expected at least one poll before cancellation")
 	}
 }
+
+// A staged self-update must never land mid-command: the loop finishes the work
+// it fetched, and only then exits so the supervisor can start the new binary.
+func TestPollStopsOnlyBetweenCommandsWhenAStopIsRequested(t *testing.T) {
+	var executing atomic.Bool
+	var stoppedWhileExecuting atomic.Bool
+	var executed atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if http.MethodGet == request.Method {
+			_, _ = writer.Write([]byte(`{"commands":[
+				{"id":"1","type":"system.ping","version":1,"idempotencyKey":"a","payload":{}},
+				{"id":"2","type":"system.ping","version":1,"idempotencyKey":"b","payload":{}}
+			]}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	executor := fakeExecutor{execute: func(command.Command) (command.Result, error) {
+		executing.Store(true)
+		time.Sleep(10 * time.Millisecond)
+		executed.Add(1)
+		executing.Store(false)
+		return command.Result{Status: "succeeded"}, nil
+	}}
+
+	stopped := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		Poll(
+			context.Background(),
+			NewClient(server.URL, "token"),
+			executor,
+			testOutbox(t),
+			time.Millisecond,
+			WithStopCheck(
+				func() bool { return true },
+				func() {
+					if executing.Load() {
+						stoppedWhileExecuting.Store(true)
+					}
+					close(stopped)
+				},
+			),
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Poll to return once a stop was requested")
+	}
+
+	<-stopped
+	if stoppedWhileExecuting.Load() {
+		t.Fatal("stopped with a command in flight; the update would interrupt provisioning")
+	}
+	if got := executed.Load(); got != 2 {
+		t.Fatalf("executed %d commands before stopping, want both fetched commands", got)
+	}
+}
