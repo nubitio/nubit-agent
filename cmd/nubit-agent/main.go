@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,12 +23,21 @@ import (
 	"github.com/nubitio/nubit-agent/internal/files"
 	"github.com/nubitio/nubit-agent/internal/inventory"
 	"github.com/nubitio/nubit-agent/internal/logs"
+	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
+	"github.com/nubitio/nubit-agent/internal/version"
 )
 
 const defaultPollInterval = 15 * time.Second
 
 func main() {
+	// Release builds are verified by asking the binary what it is, and operators
+	// need the same answer when diagnosing a server.
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
+		fmt.Println(version.Version)
+		return
+	}
+
 	address := os.Getenv("NUBIT_AGENT_LISTEN_ADDR")
 	if address == "" {
 		address = "127.0.0.1:9090"
@@ -61,7 +71,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if client := startPolling(ctx, executor, outbox); client != nil {
+	log.Printf("nubit-agent %s starting", version.Version)
+
+	updater := startSelfUpdate(ctx)
+	if client := startPolling(ctx, executor, outbox, updater, stop); client != nil {
 		go publishInventory(ctx, client, provisioner, 5*time.Minute)
 	}
 
@@ -89,12 +102,53 @@ func main() {
 	}
 }
 
+// startSelfUpdate begins the release-tracking loop unless it is switched off
+// with NUBIT_AGENT_UPDATE=off. Source builds report version "dev" and never
+// self-update, so local development is unaffected without setting anything.
+func startSelfUpdate(ctx context.Context) *selfupdate.Updater {
+	if strings.EqualFold(os.Getenv("NUBIT_AGENT_UPDATE"), "off") {
+		log.Print("nubit-agent: self-update disabled by NUBIT_AGENT_UPDATE=off")
+		return nil
+	}
+	if !version.IsRelease() {
+		log.Print("nubit-agent: source build, self-update disabled")
+		return nil
+	}
+
+	config := selfupdate.Config{CurrentVersion: version.Version}
+	if repository := os.Getenv("NUBIT_AGENT_UPDATE_REPOSITORY"); repository != "" {
+		config.Repository = repository
+	}
+	if raw := os.Getenv("NUBIT_AGENT_UPDATE_INTERVAL"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			log.Fatalf("nubit-agent: invalid NUBIT_AGENT_UPDATE_INTERVAL %q", raw)
+		}
+		config.Interval = parsed
+	}
+
+	updater, err := selfupdate.New(config)
+	if err != nil {
+		log.Printf("nubit-agent: self-update disabled: %v", err)
+		return nil
+	}
+	go updater.Run(ctx)
+
+	return updater
+}
+
 // startPolling begins the agent-initiated poll loop against Nubit Control
 // when both NUBIT_CONTROL_URL and NUBIT_AGENT_TOKEN are configured (see
 // ServerTokenController on the control-plane side for issuing the token).
 // Either left unset, the agent still runs — useful for local dev — it just
 // never picks up ProvisioningJobs.
-func startPolling(ctx context.Context, executor controlplane.Executor, outbox controlplane.Outbox) *controlplane.Client {
+func startPolling(
+	ctx context.Context,
+	executor controlplane.Executor,
+	outbox controlplane.Outbox,
+	updater *selfupdate.Updater,
+	stop context.CancelFunc,
+) *controlplane.Client {
 	controlURL := os.Getenv("NUBIT_CONTROL_URL")
 	token := os.Getenv("NUBIT_AGENT_TOKEN")
 	if controlURL == "" {
@@ -140,7 +194,16 @@ func startPolling(ctx context.Context, executor controlplane.Executor, outbox co
 		}
 		client = controlplane.NewClient(controlURL, token)
 	}
-	go controlplane.Poll(ctx, client, executor, outbox, interval)
+	options := []controlplane.PollOption{}
+	if updater != nil {
+		// Exiting is how the update is applied: systemd restarts the service and
+		// picks up the binary already swapped in on disk.
+		options = append(options, controlplane.WithStopCheck(updater.RestartPending, func() {
+			log.Print("nubit-agent: idle with an update staged, exiting for restart")
+			stop()
+		}))
+	}
+	go controlplane.Poll(ctx, client, executor, outbox, interval, options...)
 	log.Printf("nubit-agent: polling %s every %s", controlURL, interval)
 	return client
 }

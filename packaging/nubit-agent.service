@@ -1,0 +1,29 @@
+[Unit]
+Description=Nubit Agent
+Documentation=https://github.com/nubitio/nubit-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nubit-agent
+EnvironmentFile=-/etc/nubit-agent/agent.env
+
+# Restart=always is what applies a self-update: the agent stages the new binary
+# at /usr/local/bin/nubit-agent, then exits cleanly once it is idle, and systemd
+# starts the replacement. It also covers ordinary crashes.
+Restart=always
+RestartSec=5
+
+# The agent creates system users, writes PHP-FPM pools and sshd drop-ins, and
+# manages databases, so it runs as root with the filesystem writable. Sandboxing
+# it would break provisioning; containment comes from the closed command set,
+# not from the unit. See the security model in README.md.
+User=root
+
+# A provisioning run may fork package managers and service reloads.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
