@@ -5,11 +5,16 @@ server. It is not a remote shell and does not execute arbitrary user input.
 
 ## Current scope
 
-The initial implementation provides a local health endpoint and an idempotent command
-executor. Completed command results are persisted at
-`/var/lib/nubit-agent/commands.json` by default so a retry after restart does not repeat
-a provisioning action. The only supported command is `system.ping`; it establishes the
-command contract before privileged hosting operations are added.
+The initial implementation provides a local health endpoint, an idempotent command
+executor, and an agent-initiated polling transport to Nubit Control. Completed command
+results are persisted at `/var/lib/nubit-agent/commands.json` by default so a retry
+after restart does not repeat a provisioning action. The executor supports
+`system.ping`, `system.reconcile`, the complete site lifecycle (`site.create`,
+`site.inspect`, `site.suspend`, `site.resume`, `site.delete`, domain aliases), `php.set-version`,
+`php.runtime.inspect`, and `php.runtime.remove`. Local site state is persisted
+separately in `/var/lib/nubit-agent/sites.json`.
+Results awaiting acknowledgement from Control are durably queued in
+`/var/lib/nubit-agent/outbox.json` and replayed before new jobs are fetched.
 
 ```bash
 go test ./...
@@ -21,11 +26,30 @@ The health endpoint binds to `127.0.0.1:9090` by default. Configure another addr
 only through `NUBIT_AGENT_LISTEN_ADDR`; configure persistent state with
 `NUBIT_AGENT_STATE_DIR`.
 
+## Control-plane polling
+
+Set `NUBIT_CONTROL_URL` (e.g. `https://control.example.com`) and `NUBIT_AGENT_TOKEN`
+(issued by `POST /api/servers/{id}/rotate-token` on Nubit Control, ROLE_ADMIN, shown
+once) to start polling. Left unset, the agent still runs — useful for local dev — it
+just never picks up ProvisioningJobs. `NUBIT_AGENT_POLL_INTERVAL` (a Go duration, e.g.
+`30s`) overrides the 15s default.
+
+Every poll (`GET /api/agent/jobs`, `X-Agent-Token` header — deliberately not
+`Authorization: Bearer`, so these requests never reach Nubit Control's user-facing JWT
+authenticator) also doubles as a heartbeat: Nubit Control marks the server `online` with
+a fresh `lastSeenAt`. Results go back via `POST /api/agent/jobs/{id}/result`. This is an
+interim transport — see `docs/roadmap.md` for the planned move to agent-initiated mTLS.
+The agent also publishes OS, architecture, memory, disk, IP, relevant package
+versions, capabilities, and PHP runtime usage to `POST /api/agent/inventory`
+at startup and every five minutes.
+
 ## Security model
 
 - Commands have a version and an idempotency key.
 - Unknown command types fail closed.
-- The future control-plane transport uses mTLS and an agent-initiated connection.
+- The control-plane transport is agent-initiated polling today, bearer-token
+  authenticated per server; a future revision moves it to agent-initiated mTLS
+  (`docs/roadmap.md`).
 - Privileged hosting operations are added one command type at a time with payload
   validation, tests, least privilege, and rollback behavior.
 
@@ -39,4 +63,28 @@ sudo sh scripts/install.sh --dry-run --profile web
 sudo sh scripts/install.sh --profile web
 ```
 
-It does not yet enroll the server, configure sites, or install mail/FTP services.
+The web profile enables the `packages.sury.org` PHP repository and installs
+PHP-FPM 8.3, 8.4, and 8.5 side by side. New sites should use PHP 8.4 by
+default; 8.5 is available for applications validated on the newest branch.
+PHP 8.3 is deprecated: existing sites keep running and can migrate away, but
+new sites and migrations into 8.3 are rejected. Every `site.create` command
+must specify its `phpVersion`, and each site gets a pool and socket owned by
+that version's FPM service.
+
+`php.runtime.inspect` reports installation state, lifecycle status, security
+deadline, and site count for every known runtime. `php.runtime.remove` requires
+`{"phpVersion":"8.3","confirm":true}` and refuses supported versions or any
+runtime still referenced by a site.
+
+Site deletion requires a suspended site and explicit confirmation. Its document
+root and configuration copies are retained under `/srv/nubit/sites/.trash` and
+the returned `recoveryDir` identifies the recovery location.
+
+SFTP access uses public keys, OpenSSH `internal-sftp`, a forced initial document
+root, disabled forwarding, and no password authentication. PostgreSQL database
+commands use fixed operations and send passwords through stdin; secrets are not
+returned in command results. Site deletion is blocked until SFTP access and
+owned databases have been removed.
+
+It does not yet enroll the server (mTLS certificate issuance) or install mail/FTP
+services.

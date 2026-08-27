@@ -1,0 +1,153 @@
+package site
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+type State struct {
+	SiteID       string   `json:"siteId"`
+	Domain       string   `json:"domain"`
+	SystemUser   string   `json:"systemUser"`
+	PHPVersion   string   `json:"phpVersion"`
+	DocumentRoot string   `json:"documentRoot"`
+	PHPSocket    string   `json:"phpSocket"`
+	Status       string   `json:"status"`
+	Domains      []string `json:"domains"`
+	Databases    []string `json:"databases,omitempty"`
+	SFTPEnabled  bool     `json:"sftpEnabled"`
+}
+
+type StateStore interface {
+	Get(siteID string) (State, bool)
+	List() []State
+	Save(state State) error
+	Delete(siteID string) error
+}
+
+type MemoryStateStore struct {
+	mu     sync.RWMutex
+	states map[string]State
+}
+
+func NewMemoryStateStore() *MemoryStateStore {
+	return &MemoryStateStore{states: make(map[string]State)}
+}
+
+func (store *MemoryStateStore) Get(siteID string) (State, bool) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	state, found := store.states[siteID]
+	return state, found
+}
+
+func (store *MemoryStateStore) Save(state State) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.states[state.SiteID] = state
+	return nil
+}
+
+func (store *MemoryStateStore) List() []State {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	states := make([]State, 0, len(store.states))
+	for _, state := range store.states {
+		states = append(states, state)
+	}
+	return states
+}
+
+func (store *MemoryStateStore) Delete(siteID string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delete(store.states, siteID)
+	return nil
+}
+
+type FileStateStore struct {
+	mu     sync.RWMutex
+	path   string
+	states map[string]State
+}
+
+func NewFileStateStore(path string) (*FileStateStore, error) {
+	store := &FileStateStore{path: path, states: make(map[string]State)}
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(contents, &store.states); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func (store *FileStateStore) Get(siteID string) (State, bool) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	state, found := store.states[siteID]
+	return state, found
+}
+
+func (store *FileStateStore) Save(state State) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	previous, existed := store.states[state.SiteID]
+	store.states[state.SiteID] = state
+	if err := store.persist(); err != nil {
+		if existed {
+			store.states[state.SiteID] = previous
+		} else {
+			delete(store.states, state.SiteID)
+		}
+		return err
+	}
+	return nil
+}
+
+func (store *FileStateStore) List() []State {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	states := make([]State, 0, len(store.states))
+	for _, state := range store.states {
+		states = append(states, state)
+	}
+	return states
+}
+
+func (store *FileStateStore) Delete(siteID string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	previous, found := store.states[siteID]
+	if !found {
+		return nil
+	}
+	delete(store.states, siteID)
+	if err := store.persist(); err != nil {
+		store.states[siteID] = previous
+		return err
+	}
+	return nil
+}
+
+func (store *FileStateStore) persist() error {
+	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
+		return err
+	}
+	contents, err := json.Marshal(store.states)
+	if err != nil {
+		return err
+	}
+	temporary := store.path + ".tmp"
+	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, store.path)
+}

@@ -28,19 +28,40 @@ management are separate later profiles.
 - Versioned command contract and persistent idempotent executor.
 - `system.ping` command.
 - Debian 12 web-profile installer with `--dry-run`.
-- Validated `site.create` payload contract: domain, Unix user, PHP 8.3.
+- Validated `site.create` payload contract: domain, Unix user, and PHP 8.3,
+  8.4, or 8.5 (8.4 recommended for new sites).
 - Isolated-site provisioner for a system user and document root.
 - Deterministic Caddy and PHP-FPM configuration renderers.
+- Atomic, validated Caddy and PHP-FPM configuration activation with rollback.
+- `site.create` executor integration with structured paths and configuration hashes.
+- Integration test on a disposable Debian 12 container, validated against real
+  Caddy and PHP-FPM 8.3/8.4/8.5 binaries (`scripts/test-site-create-debian12.sh`).
+- Agent-initiated polling transport: `GET /api/agent/jobs` /
+  `POST /api/agent/jobs/{id}/result` against Nubit Control, authenticated with
+  a per-server bearer token (`X-Agent-Token`), not the mTLS enrollment flow
+  below yet — see "Agent enrollment".
+- Persistent local site inventory exposed through `site.inspect`.
+- PHP runtime lifecycle catalog and rollback-safe `php.set-version`; deprecated
+  runtimes continue serving existing sites but cannot receive new sites.
+- Runtime inventory and explicitly confirmed `php.runtime.remove`, guarded by
+  lifecycle status and a zero-site usage check.
+- Persistent result outbox replayed before fetching new work, preventing a
+  temporary Control outage or agent restart from losing command outcomes.
+- Periodic server inventory publication with OS, resources, IP addresses,
+  relevant packages, capabilities, and PHP runtime usage.
+- ECDSA enrollment, locally held private key, TLS 1.3 client identity, and
+  automatic certificate renewal before expiry.
+- Drift inspection through `system.reconcile`.
+- Site suspension, resumption, alias domains, and recoverable confirmed deletion.
+- Public-key SFTP lifecycle with restricted OpenSSH configuration.
+- PostgreSQL create, password rotation, and confirmed delete operations scoped
+  to persistent site ownership.
 
-## Immediate slice: real site.create
+## Immediate slice: control-plane transport hardening
 
-1. Write Caddy and PHP-FPM configuration files atomically into staging paths.
-2. Validate Caddy and PHP-FPM configuration before replacing active files.
-3. Move valid files into active paths and reload services.
-4. Roll back files and user directories when validation or reload fails.
-5. Connect the provisioner to the `site.create` command executor.
-6. Return site ID, document root, PHP socket, and applied configuration hashes.
-7. Add integration tests using a disposable Debian 12 container.
+1. Replace the bearer-token transport with agent-initiated mTLS per "Agent
+   enrollment" below.
+2. Attach the implemented inventory publication to the mTLS server identity.
 
 ## Agent enrollment
 
@@ -55,32 +76,32 @@ management are separate later profiles.
 
 ## Web hosting commands
 
-1. `site.create`
-2. `site.suspend`
-3. `site.resume`
-4. `site.delete`
-5. `site.add-domain`
-6. `site.remove-domain`
-7. `php.set-version`
-8. `site.inspect`
+1. `site.create` (implemented)
+2. `site.suspend` (implemented)
+3. `site.resume` (implemented)
+4. `site.delete` (implemented)
+5. `site.add-domain` (implemented)
+6. `site.remove-domain` (implemented)
+7. `php.set-version` (implemented)
+8. `site.inspect` (implemented)
 
 Each command must define validation, idempotency identity, expected files,
 service reload behavior, and rollback behavior before implementation.
 
 ## Access commands
 
-1. `sftp.create`
-2. `sftp.rotate-password` or SSH-key update
-3. `sftp.revoke`
+1. `sftp.create` (implemented)
+2. `sftp.update-key` (implemented)
+3. `sftp.revoke` (implemented)
 
 SFTP uses OpenSSH native restrictions. FTP is not part of the first profile;
 add it only for demonstrated compatibility demand.
 
 ## Data and TLS commands
 
-1. `database.create`
-2. `database.rotate-password`
-3. `database.delete`
+1. `database.create` (implemented)
+2. `database.rotate-password` (implemented)
+3. `database.delete` (implemented)
 4. `tls.issue`
 5. `tls.renew`
 6. `tls.revoke`

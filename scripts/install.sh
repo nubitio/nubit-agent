@@ -33,6 +33,16 @@ done
 [ "$ID" = debian ] && [ "$VERSION_ID" = 12 ] || { printf '%s\n' 'Nubit Agent currently supports Debian 12 only.' >&2; exit 1; }
 
 run apt-get update
-run apt-get install -y ca-certificates curl caddy php-fpm postgresql openssh-server
+run apt-get install -y ca-certificates curl caddy lsb-release postgresql openssh-server
+run curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb
+run dpkg -i /tmp/debsuryorg-archive-keyring.deb
+run sh -c 'printf "%s\n" "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ bookworm main" > /etc/apt/sources.list.d/php.list'
+run apt-get update
+run apt-get install -y php8.3-fpm php8.4-fpm php8.5-fpm
 run install -d -m 0750 /var/lib/nubit-agent
+run install -d -m 0755 /etc/caddy/sites-enabled
+if ! grep -Fqx 'import /etc/caddy/sites-enabled/*' /etc/caddy/Caddyfile; then
+  run sh -c 'printf "\n%s\n" "import /etc/caddy/sites-enabled/*" >> /etc/caddy/Caddyfile'
+fi
+run caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 printf '%s\n' "Nubit Agent web profile installed. Enrollment is the next required step."

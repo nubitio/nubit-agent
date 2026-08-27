@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+# Disposable containers do not boot systemd. Configuration validation is still
+# performed by the real Caddy and PHP-FPM binaries before this reload boundary.
+[ "$1" = reload ]
+[ "$2" = caddy ] || [ "$2" = php8.3-fpm ] || [ "$2" = php8.4-fpm ] || [ "$2" = php8.5-fpm ]

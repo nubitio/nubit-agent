@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+# Containers do not boot systemd. Reload the real processes instead.
+[ "${1:-}" = reload ]
+case "${2:-}" in
+	caddy)
+		caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+		;;
+	php8.3-fpm|php8.4-fpm|php8.5-fpm)
+		pidfile="/run/php/${2}.pid"
+		version=${2%-fpm}
+		version=${version#php}
+		binary="/usr/sbin/php-fpm${version}"
+		if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+			kill -USR2 "$(cat "$pidfile")"
+		else
+			"$binary" --daemonize --pid "$pidfile"
+		fi
+		;;
+	ssh|sshd)
+		if [ -f /run/sshd.pid ]; then
+			kill -HUP "$(cat /run/sshd.pid)" || true
+		fi
+		;;
+	*) exit 1 ;;
+esac
