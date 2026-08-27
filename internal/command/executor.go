@@ -54,10 +54,10 @@ func (store *MemoryStore) Save(key string, result Result) error {
 }
 
 type Executor struct {
-	mu    sync.Mutex
-	store Store
-	sites SiteProvisioner
-	sftp  SFTPProvisioner
+	mu      sync.Mutex
+	store   Store
+	sites   SiteProvisioner
+	sftp    SFTPProvisioner
 	db      DatabaseProvisioner
 	files   FilesProvisioner
 	cron    CronProvisioner

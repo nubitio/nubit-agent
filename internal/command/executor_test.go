@@ -61,12 +61,12 @@ func (fakeFilesProvisioner) List(siteID, rel string) (files.ListResult, error) {
 	return files.ListResult{Path: rel, Entries: []files.Entry{{Name: "index.html", Type: "file", Size: 4}}}, nil
 }
 
-func (fakeFilesProvisioner) Mkdir(string, string) error { return nil }
+func (fakeFilesProvisioner) Mkdir(string, string) error         { return nil }
 func (fakeFilesProvisioner) Write(string, string, []byte) error { return nil }
 func (fakeFilesProvisioner) Read(string, string) (files.ReadResult, error) {
 	return files.ReadResult{Name: "index.html", Size: 4, Content: []byte("hola")}, nil
 }
-func (fakeFilesProvisioner) Delete(string, string) error { return nil }
+func (fakeFilesProvisioner) Delete(string, string) error         { return nil }
 func (fakeFilesProvisioner) Rename(string, string, string) error { return nil }
 func (fakeFilesProvisioner) Unzip(string, string) error          { return nil }
 func (fakeFilesProvisioner) Usage(string) (files.UsageResult, error) {
