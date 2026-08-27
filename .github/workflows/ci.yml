@@ -80,8 +80,26 @@ jobs:
       - name: ShellCheck
         run: shellcheck --shell=sh scripts/install.sh
 
-      # --dry-run must never touch the machine, so it is safe to exercise in CI
-      # and proves the argument parsing and platform detection still work. The
-      # version is pinned so the check does not depend on a release existing.
+      # --dry-run never touches the machine, so it is safe to exercise here and
+      # proves argument parsing and platform detection still work. The version is
+      # pinned so the check does not depend on a release existing.
       - name: Dry run
-        run: sudo sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci
+        run: sudo sh scripts/install.sh --dry-run --version v0.0.0-ci
+
+      # The web profile refuses anything but Debian 12, and the runner is Ubuntu,
+      # so that path is exercised in a container that satisfies the guard.
+      - name: Dry run of the web profile on Debian 12
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:12-slim sh -c '
+            apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
+            sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci
+          '
+
+      # A host the agent does not support must be refused, not half-installed.
+      - name: Refuses an unsupported distribution
+        run: |
+          if sudo sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci; then
+            echo "the web profile installed on a non-Debian-12 host" >&2
+            exit 1
+          fi
+          echo "correctly refused"
