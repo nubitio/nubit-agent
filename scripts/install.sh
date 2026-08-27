@@ -111,7 +111,9 @@ if [ -n "$profile" ]; then
   [ -r /etc/os-release ] || fail 'Cannot identify the operating system.'
   # shellcheck source=/dev/null # provided by the host, not by this repository
   . /etc/os-release
-  [ "$ID" = debian ] && [ "$VERSION_ID" = 12 ] || fail 'The web profile currently supports Debian 12 only.'
+  if [ "${ID:-}" != debian ] || [ "${VERSION_ID:-}" != 12 ]; then
+    fail 'The web profile currently supports Debian 12 only.'
+  fi
 
   run apt-get update
   run apt-get install -y ca-certificates curl caddy lsb-release postgresql openssh-server
