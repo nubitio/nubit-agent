@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 type TLSLetsEncryptPayload struct {
@@ -48,7 +49,7 @@ func parseTLSLetsEncrypt(payload json.RawMessage) (TLSLetsEncryptPayload, error)
 		return request, errors.New("site id is invalid")
 	}
 	if request.ChallengeType != "http-01" {
-		return request, errors.New("TLS challenge type is unsupported")
+		return request, fmt.Errorf("tls challenge type %q is not supported: only http-01 is currently implemented. %s will be added when ACME challenge mutation is implemented", request.ChallengeType, request.ChallengeType)
 	}
 	if len(request.Domains) == 0 {
 		return request, errors.New("TLS domains are required")

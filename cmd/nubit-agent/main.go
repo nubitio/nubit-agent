@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/access"
+	"github.com/nubitio/nubit-agent/internal/audit"
 	"github.com/nubitio/nubit-agent/internal/backup"
 	"github.com/nubitio/nubit-agent/internal/command"
 	"github.com/nubitio/nubit-agent/internal/controlplane"
@@ -77,7 +78,12 @@ func main() {
 	if mailManager, ok := mailProvisioner(); ok {
 		services = append(services, mailManager)
 	}
-	executor := command.NewExecutor(store, services...)
+	executor := command.NewExecutorWithConfig(command.ConfigFromEnv(), store, services...)
+	auditLogger, err := audit.New(filepath.Join(stateDir, "audit.log"))
+	if err != nil {
+		log.Fatalf("initialize audit log: %v", err)
+	}
+	executor.SetAuditLogger(auditLogger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

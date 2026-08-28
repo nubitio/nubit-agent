@@ -1,13 +1,17 @@
 package command
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/access"
+	"github.com/nubitio/nubit-agent/internal/audit"
 	"github.com/nubitio/nubit-agent/internal/backup"
 	"github.com/nubitio/nubit-agent/internal/cron"
 	"github.com/nubitio/nubit-agent/internal/database"
@@ -67,6 +71,22 @@ type Executor struct {
 	backups BackupProvisioner
 	mail    MailProvisioner
 	tls     TLSInspector
+	audit   *audit.Logger
+
+	defaultTimeout time.Duration
+	typeTimeouts   map[string]time.Duration
+	defaultRate    float64
+	typeRates      map[string]float64
+	exemptTypes    map[string]bool
+	rateLimitersMu sync.Mutex
+	rateLimiters   map[string]*tokenBucket
+}
+
+// SetAuditLogger installs the audit log used to record every command the
+// executor runs. A nil logger disables auditing. The executor takes a copy
+// of the pointer; the caller may keep using the same Logger afterwards.
+func (executor *Executor) SetAuditLogger(logger *audit.Logger) {
+	executor.audit = logger
 }
 
 type SiteProvisioner interface {
@@ -147,7 +167,40 @@ type BackupProvisioner interface {
 }
 
 func NewExecutor(store Store, services ...any) *Executor {
-	executor := &Executor{store: store}
+	return NewExecutorWithConfig(ExecutorConfig{}, store, services...)
+}
+
+// NewExecutorWithConfig wires the executor with the supplied defence-in-depth
+// configuration. A zero ExecutorConfig disables both the timeout and the rate
+// limit, which keeps the long-standing call sites (tests, in-process callers)
+// behaving exactly as before. The exempt set always includes the
+// read-only/reconciliation commands documented as exempt: callers may add
+// more, but the defaults cannot be removed (a control-plane that depends on
+// system.ping being reachable in a flood is the documented contract).
+func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) *Executor {
+	exempt := map[string]bool{
+		SystemPing:            true,
+		SystemReconcile:       true,
+		TLSCertificateInspect: true,
+	}
+	for commandType, value := range config.ExemptTypes {
+		exempt[commandType] = value
+	}
+	executor := &Executor{
+		store:          store,
+		defaultTimeout: config.DefaultCommandTimeout,
+		typeTimeouts:   config.TypeTimeouts,
+		defaultRate:    config.DefaultRatePerMinute,
+		typeRates:      config.TypeRates,
+		exemptTypes:    exempt,
+		rateLimiters:   map[string]*tokenBucket{},
+	}
+	if executor.typeTimeouts == nil {
+		executor.typeTimeouts = map[string]time.Duration{}
+	}
+	if executor.typeRates == nil {
+		executor.typeRates = map[string]float64{}
+	}
 	for _, service := range services {
 		if sites, ok := service.(SiteProvisioner); ok {
 			executor.sites = sites
@@ -187,6 +240,18 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 	if err := command.Validate(); err != nil {
 		return Result{}, err
 	}
+
+	// The rate limit is evaluated before the idempotency check, on purpose:
+	// a control plane that replays the same command under load will keep
+	// hitting the same idempotency key, and the rate limit is the only
+	// signal that distinguishes "Control is misbehaving" from "Control
+	// intentionally re-sent". Trade-off documented in the executor config.
+	if executor.defaultRate > 0 && !executor.exemptTypes[command.Type] {
+		if !executor.allowCommand(command.Type) {
+			return executor.recordRateLimitFailure(command)
+		}
+	}
+
 	cacheResult := !isSiteFilesCommand(command.Type)
 	if cacheResult {
 		if result, found := executor.store.Get(command.IdempotencyKey); found {
@@ -194,6 +259,173 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		}
 	}
 
+	payloadSHA := audit.HashPayload(command.Payload)
+	started := time.Now()
+
+	result, err := executor.runWithTimeout(command)
+	if err != nil {
+		executor.recordAudit(command, payloadSHA, started, "failed")
+		return Result{}, err
+	}
+	if cacheResult {
+		if saveErr := executor.store.Save(command.IdempotencyKey, result); saveErr != nil {
+			executor.recordAudit(command, payloadSHA, started, "failed")
+			return Result{}, saveErr
+		}
+	}
+	executor.recordAudit(command, payloadSHA, started, "ok")
+
+	return result, nil
+}
+
+// recordAudit appends one entry to the audit log. The audit is best-effort:
+// a write failure is logged but never propagated, so a full disk or a broken
+// permission cannot block commands that are otherwise fine to run.
+func (executor *Executor) recordAudit(command Command, payloadSHA string, started time.Time, result string) {
+	if executor.audit == nil {
+		return
+	}
+	event := audit.Event{
+		CommandID:      command.ID,
+		CommandType:    command.Type,
+		IdempotencyKey: command.IdempotencyKey,
+		PayloadSHA256:  payloadSHA,
+		Result:         result,
+		DurationMs:     time.Since(started).Milliseconds(),
+	}
+	if err := executor.audit.Record(context.Background(), event); err != nil {
+		log.Printf("nubit-agent: audit log write failed for command %s: %v", command.ID, err)
+	}
+}
+
+// runWithTimeout dispatches the command under a per-type timeout. The
+// provisioners themselves do not currently accept a context, so the timeout
+// only protects the executor's mutex and the dispatcher's bookkeeping: any
+// child process the provisioner spawns will keep running until the
+// provisioner returns, and rely on systemd's KillMode=mixed to clean up if
+// it does not. This is the documented limitation: a tighter guarantee would
+// require every provisioner to honour ctx, which is out of scope for a
+// defensive fix.
+func (executor *Executor) runWithTimeout(command Command) (Result, error) {
+	timeout := executor.timeoutFor(command.Type)
+	if timeout <= 0 {
+		return executor.runCommand(command)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := executor.runCommand(command)
+		// runCommand returns Result{} for a non-timeout error; let the
+		// parent goroutine build the failure Result so the persistence
+		// path is shared.
+		if err == nil {
+			done <- outcome{result: result}
+			return
+		}
+		done <- outcome{err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		// The provisioner is still running in its own goroutine and may
+		// eventually return; we deliberately do not wait for it. The
+		// command is recorded as failed and the control plane will see
+		// the timeout message.
+		seconds := int(timeout / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		message := fmt.Sprintf("command %s exceeded timeout %ds", command.Type, seconds)
+		failed := Result{
+			CommandID: command.ID,
+			Status:    "failed",
+			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
+		}
+		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
+			return Result{}, saveErr
+		}
+		return Result{}, errors.New(message)
+	case outcome := <-done:
+		return outcome.result, outcome.err
+	}
+}
+
+// timeoutFor picks the timeout applicable to a command type: an explicit
+// override, or the default. Zero or negative disables the timeout.
+func (executor *Executor) timeoutFor(commandType string) time.Duration {
+	if override, ok := executor.typeTimeouts[commandType]; ok {
+		return override
+	}
+	return executor.defaultTimeout
+}
+
+// allowCommand checks the per-type rate limit. It returns true if the
+// command may proceed.
+func (executor *Executor) allowCommand(commandType string) bool {
+	rate := executor.defaultRate
+	if override, ok := executor.typeRates[commandType]; ok {
+		rate = override
+	}
+	if rate <= 0 {
+		return true
+	}
+
+	executor.rateLimitersMu.Lock()
+	bucket, exists := executor.rateLimiters[commandType]
+	if !exists {
+		bucket = newTokenBucket(rate)
+		executor.rateLimiters[commandType] = bucket
+	}
+	executor.rateLimitersMu.Unlock()
+
+	allowed, _ := bucket.allow()
+	return allowed
+}
+
+// recordRateLimitFailure builds the failure error for a rate-limited
+// command. The retry-after shown in the message is rounded up to the next
+// whole second so an operator-facing log line is stable. The failure is
+// NOT persisted to the store: a rate-limited command never reached the
+// provisioner, and the existing rate-limit accounting already prevents
+// replay from succeeding.
+func (executor *Executor) recordRateLimitFailure(command Command) (Result, error) {
+	perMinute := executor.rateFor(command.Type)
+
+	executor.rateLimitersMu.Lock()
+	bucket, exists := executor.rateLimiters[command.Type]
+	executor.rateLimitersMu.Unlock()
+	if !exists {
+		bucket = newTokenBucket(perMinute)
+	}
+
+	_, retryAfter := bucket.allow()
+	seconds := int(retryAfter / time.Second)
+	if retryAfter > 0 && time.Duration(seconds)*time.Second < retryAfter {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	message := fmt.Sprintf("rate limit exceeded for %s: max %g per %d, retry in %ds", command.Type, perMinute, 60, seconds)
+	return Result{}, errors.New(message)
+}
+
+// rateFor returns the configured per-minute cap for a command type.
+func (executor *Executor) rateFor(commandType string) float64 {
+	if override, ok := executor.typeRates[commandType]; ok {
+		return override
+	}
+	return executor.defaultRate
+}
+
+func (executor *Executor) runCommand(command Command) (Result, error) {
 	var output []byte
 	var err error
 	switch command.Type {
@@ -545,7 +777,7 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		if parseErr != nil {
 			return Result{}, parseErr
 		}
-		output, err = executor.executeTLS(siteID, challengeType, domains)
+		output, err = executor.executeTLS(command.Type, siteID, challengeType, domains)
 	default:
 		return Result{}, errors.New("unsupported command type")
 	}
@@ -553,18 +785,11 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		return Result{}, err
 	}
 
-	result := Result{
+	return Result{
 		CommandID: command.ID,
 		Status:    "succeeded",
 		Output:    output,
-	}
-	if cacheResult {
-		if err := executor.store.Save(command.IdempotencyKey, result); err != nil {
-			return Result{}, err
-		}
-	}
-
-	return result, nil
+	}, nil
 }
 
 func isSiteFilesCommand(commandType string) bool {
@@ -692,17 +917,25 @@ func (executor *Executor) executeMail(commandType string, payload json.RawMessag
 // executeTLS reports the certificate the site actually has.
 //
 // Caddy issues and renews on its own; the agent's job is to say what came of
-// it. A site whose domain has not resolved yet has no certificate, and that is
-// reported as a state rather than raised as a failure — the control plane
-// re-asks, and a job that failed on a normal condition would only be retried
-// forever.
-func (executor *Executor) executeTLS(siteID, challengeType string, domains []string) ([]byte, error) {
+// it. For TLSCertificateInspect, the absence of a certificate is reported as
+// a state (the control plane keeps asking until the domain resolves). For
+// TLSLetsEncryptEnable, the same absence is surfaced as a failure with an
+// explicit message so the operator sees that the agent cannot drive ACME
+// itself, and the control plane does not assume the job is still running.
+func (executor *Executor) executeTLS(commandType, siteID, challengeType string, domains []string) ([]byte, error) {
 	if executor.tls == nil {
 		return nil, errors.New("TLS inspector is not configured")
 	}
 
 	evidence, err := executor.tls.Inspect(siteID)
 	if errors.Is(err, tls.ErrNoCertificate) {
+		if commandType == TLSLetsEncryptEnable {
+			domain := siteID
+			if len(domains) > 0 {
+				domain = domains[0]
+			}
+			return nil, fmt.Errorf("tls.letsencrypt.enable is not implemented: Caddy is expected to have issued the certificate automatically. No certificate found for %s. Verify Caddy has the domain in its config and that ACME HTTP-01 is reachable", domain)
+		}
 		return json.Marshal(map[string]any{
 			"siteId":           siteID,
 			"domains":          domains,
@@ -719,7 +952,9 @@ func (executor *Executor) executeTLS(siteID, challengeType string, domains []str
 
 	// The challenge type rides alongside rather than inside the status: the
 	// control plane allowlists it as its own field, and folding it into the
-	// status would make that value unpredictable to match on.
+	// status would make that value unpredictable to match on. It is only
+	// meaningful when the caller asked for a specific challenge (the enable
+	// command); the inspect command never names one.
 	report := map[string]any{
 		"siteId":           evidence.SiteID,
 		"domains":          evidence.Domains,

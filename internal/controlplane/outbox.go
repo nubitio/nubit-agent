@@ -3,10 +3,23 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+)
+
+// Outbox put/delete failures are classified so the poller can decide whether a
+// single bad write should abort the whole batch or be treated as recoverable.
+//
+// The current FileOutbox never returns ErrOutboxFull (it accepts unbounded
+// entries; bounded eviction is tracked separately), but the sentinel exists
+// for forward compatibility with the bounded outbox plan.
+var (
+	ErrOutboxFull    = errors.New("outbox full, oldest evicted")
+	ErrOutboxCorrupt = errors.New("outbox storage corrupt")
+	ErrOutboxIO      = errors.New("outbox io error")
 )
 
 type PendingResult struct {
@@ -35,10 +48,10 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 		return outbox, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: read outbox file: %v", ErrOutboxIO, err)
 	}
 	if err := json.Unmarshal(contents, &outbox.pending); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: parse outbox file: %v", ErrOutboxCorrupt, err)
 	}
 	return outbox, nil
 }
@@ -91,15 +104,18 @@ func (outbox *FileOutbox) Delete(commandID string) error {
 
 func (outbox *FileOutbox) persist() error {
 	if err := os.MkdirAll(filepath.Dir(outbox.path), 0o700); err != nil {
-		return err
+		return fmt.Errorf("%w: create outbox directory: %v", ErrOutboxIO, err)
 	}
 	contents, err := json.Marshal(outbox.pending)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: encode outbox: %v", ErrOutboxCorrupt, err)
 	}
 	temporary := outbox.path + ".tmp"
 	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
-		return err
+		return fmt.Errorf("%w: write outbox: %v", ErrOutboxIO, err)
 	}
-	return os.Rename(temporary, outbox.path)
+	if err := os.Rename(temporary, outbox.path); err != nil {
+		return fmt.Errorf("%w: rename outbox: %v", ErrOutboxIO, err)
+	}
+	return nil
 }

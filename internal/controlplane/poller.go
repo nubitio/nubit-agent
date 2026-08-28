@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -106,8 +107,20 @@ func executeAndReport(ctx context.Context, client *Client, executor Executor, ou
 		pending.Error = execErr.Error()
 	}
 	if err := outbox.Put(pending); err != nil {
-		log.Printf("nubit-agent: persist result for command %s failed: %v", cmd.ID, err)
-		return false
+		switch {
+		case errors.Is(err, ErrOutboxFull):
+			// Eviction kept the outbox healthy, but this command's report is
+			// gone. The next poll will regenerate the report because the
+			// executor is idempotent on the command's idempotency key.
+			log.Printf("nubit-agent: outbox full, dropped result for command %s; will be regenerated on next poll: %v", cmd.ID, err)
+			return true
+		case errors.Is(err, ErrOutboxCorrupt), errors.Is(err, ErrOutboxIO):
+			log.Printf("nubit-agent: persist result for command %s failed: %v", cmd.ID, err)
+			return false
+		default:
+			log.Printf("nubit-agent: persist result for command %s failed: %v", cmd.ID, err)
+			return false
+		}
 	}
 	return flushOutbox(ctx, client, outbox)
 }
