@@ -70,9 +70,10 @@ type Executor struct {
 }
 
 type SiteProvisioner interface {
-	Create(domain, systemUser, phpVersion string) (site.CreateResult, error)
+	Create(domain, systemUser, phpVersion string, resources site.Resources) (site.CreateResult, error)
 	Inspect(siteID string) (site.State, error)
 	SetPHPVersion(siteID, phpVersion string) (site.PHPVersionResult, error)
+	SetResources(siteID string, resources site.Resources) (site.ResourcesResult, error)
 	Suspend(siteID string) (site.LifecycleResult, error)
 	Resume(siteID string) (site.LifecycleResult, error)
 	AddDomain(siteID, domain string) (site.DomainResult, error)
@@ -199,11 +200,24 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		if executor.sites == nil {
 			return Result{}, errors.New("site provisioner is not configured")
 		}
-		created, createErr := executor.sites.Create(site.Domain, site.SystemUser, site.PHPVersion)
+		created, createErr := executor.sites.Create(site.Domain, site.SystemUser, site.PHPVersion, site.Resources)
 		if createErr != nil {
 			return Result{}, createErr
 		}
 		output, err = json.Marshal(map[string]string{"siteId": created.SiteID, "documentRoot": created.DocumentRoot, "phpSocket": created.PHPSocket, "caddyConfigHash": created.CaddyConfigHash, "phpConfigHash": created.PHPConfigHash})
+	case SiteSetResources:
+		request, parseErr := parseSiteResources(command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.sites == nil {
+			return Result{}, errors.New("site provisioner is not configured")
+		}
+		applied, resourcesErr := executor.sites.SetResources(request.SiteID, request.Resources)
+		if resourcesErr != nil {
+			return Result{}, resourcesErr
+		}
+		output, err = json.Marshal(applied)
 	case SiteInspect:
 		request, parseErr := parseSiteInspect(command.Payload)
 		if parseErr != nil {
@@ -268,8 +282,8 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, deleteErr
 		}
 		output, err = json.Marshal(deleted)
-	case PHPSetVersion:
-		request, parseErr := parsePHPSetVersion(command.Payload)
+	case RuntimeSetVersion:
+		request, parseErr := parseRuntimeSetVersion(command.Payload)
 		if parseErr != nil {
 			return Result{}, parseErr
 		}
@@ -281,7 +295,7 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, changeErr
 		}
 		output, err = json.Marshal(changed)
-	case PHPRuntimeInspect:
+	case RuntimeInspect:
 		if executor.sites == nil {
 			return Result{}, errors.New("site provisioner is not configured")
 		}
@@ -290,7 +304,7 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, inspectErr
 		}
 		output, err = json.Marshal(map[string]any{"runtimes": runtimes})
-	case PHPRuntimeRemove:
+	case RuntimeRemove:
 		request, parseErr := parsePHPRuntime(command.Payload)
 		if parseErr != nil {
 			return Result{}, parseErr

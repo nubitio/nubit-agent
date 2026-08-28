@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/php"
+	"github.com/nubitio/nubit-agent/internal/site"
 )
 
 var siteName = regexp.MustCompile(`^[a-z][a-z0-9-]{2,62}$`)
@@ -16,30 +17,58 @@ type SiteCreatePayload struct {
 	Domain     string `json:"domain"`
 	SystemUser string `json:"systemUser"`
 	PHPVersion string `json:"phpVersion"`
+	// Optional: a control plane that says nothing about limits gets the
+	// shared-hosting tier, which is what every site was given before plans
+	// could set them.
+	Resources site.Resources `json:"resources"`
+}
+
+type SiteResourcesPayload struct {
+	SiteID    string         `json:"siteId"`
+	Resources site.Resources `json:"resources"`
 }
 
 func parseSiteCreate(payload json.RawMessage) (SiteCreatePayload, error) {
-	var site SiteCreatePayload
-	if err := json.Unmarshal(payload, &site); err != nil {
-		return site, err
+	var request SiteCreatePayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return request, err
 	}
-	if !domainName.MatchString(site.Domain) {
-		return site, errors.New("site domain is invalid")
+	if !domainName.MatchString(request.Domain) {
+		return request, errors.New("site domain is invalid")
 	}
-	if !siteName.MatchString(site.SystemUser) {
-		return site, errors.New("site system user is invalid")
+	if !siteName.MatchString(request.SystemUser) {
+		return request, errors.New("site system user is invalid")
 	}
-	if err := php.ValidateNewSite(site.PHPVersion, time.Now().UTC()); err != nil {
-		return site, err
+	if err := php.ValidateNewSite(request.PHPVersion, time.Now().UTC()); err != nil {
+		return request, err
 	}
-	return site, nil
+	request.Resources = request.Resources.WithDefaults()
+	if err := request.Resources.Validate(); err != nil {
+		return request, err
+	}
+	return request, nil
+}
+
+func parseSiteResources(payload json.RawMessage) (SiteResourcesPayload, error) {
+	var request SiteResourcesPayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return request, err
+	}
+	if !domainName.MatchString(request.SiteID) {
+		return request, errors.New("site id is invalid")
+	}
+	request.Resources = request.Resources.WithDefaults()
+	if err := request.Resources.Validate(); err != nil {
+		return request, err
+	}
+	return request, nil
 }
 
 type SiteInspectPayload struct {
 	SiteID string `json:"siteId"`
 }
 
-type PHPSetVersionPayload struct {
+type RuntimeSetVersionPayload struct {
 	SiteID     string `json:"siteId"`
 	PHPVersion string `json:"phpVersion"`
 }
@@ -70,8 +99,8 @@ func parseSiteInspect(payload json.RawMessage) (SiteInspectPayload, error) {
 	return request, nil
 }
 
-func parsePHPSetVersion(payload json.RawMessage) (PHPSetVersionPayload, error) {
-	var request PHPSetVersionPayload
+func parseRuntimeSetVersion(payload json.RawMessage) (RuntimeSetVersionPayload, error) {
+	var request RuntimeSetVersionPayload
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return request, err
 	}

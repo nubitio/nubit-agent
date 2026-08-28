@@ -16,12 +16,15 @@ func TestLocalhostAliasIsOptional(t *testing.T) {
 func TestSiteConfigsUseIsolatedPaths(t *testing.T) {
 	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "")
 	caddy := CaddyConfig("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")
-	fpm := PHPFPMConfig("site-example", "/srv/nubit/sites/example.com", "site-example.sock")
+	fpm := PHPFPMConfig("site-example", "/srv/nubit/sites/example.com", "site-example.sock", Resources{})
 	if !strings.Contains(caddy, "php_fastcgi unix/site-example.sock") || !strings.Contains(fpm, "user = site-example") {
 		t.Fatal("site config is not isolated")
 	}
 	if !strings.Contains(fpm, "pm = ondemand") || !strings.Contains(fpm, "pm.max_children = 5") {
 		t.Fatal("site config does not define a valid process manager")
+	}
+	if !strings.Contains(fpm, "php_admin_value[memory_limit] = 128M") {
+		t.Fatalf("an unset plan did not fall back to the shared tier:\n%s", fpm)
 	}
 	// Caddy runs as its own user and connects over this socket. Owned by the
 	// tenant and group-owned by the web server at 0660 is what lets it in
@@ -42,5 +45,19 @@ func TestSiteConfigsUseIsolatedPaths(t *testing.T) {
 	}
 	if !strings.Contains(fpm, "php_admin_value[open_basedir]") {
 		t.Fatalf("the pool can read outside the site:\n%s", fpm)
+	}
+}
+
+// The limits a plan buys have to reach the pool, and a site that only raises
+// one of the two must keep the default for the other.
+func TestPoolLimitsComeFromThePlan(t *testing.T) {
+	fpm := PHPFPMConfig("site-example", "/srv/nubit/sites/example.com", "site-example.sock", Resources{Workers: 20, MemoryLimitMB: 512})
+	if !strings.Contains(fpm, "pm.max_children = 20") || !strings.Contains(fpm, "php_admin_value[memory_limit] = 512M") {
+		t.Fatalf("the plan's limits did not reach the pool:\n%s", fpm)
+	}
+
+	half := PHPFPMConfig("site-example", "/srv/nubit/sites/example.com", "site-example.sock", Resources{Workers: 12})
+	if !strings.Contains(half, "pm.max_children = 12") || !strings.Contains(half, "php_admin_value[memory_limit] = 128M") {
+		t.Fatalf("setting one limit dropped the other:\n%s", half)
 	}
 }

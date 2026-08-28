@@ -30,7 +30,7 @@ func TestProvisionerCreatesIsolatedUserAndDocumentRoot(t *testing.T) {
 	result, err := (Provisioner{Runner: runner, Store: NewMemoryStateStore(), Layout: Layout{
 		SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
 		PHPConfigDir: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
-	}}).Create("example.com", "site-example", "8.4")
+	}}).Create("example.com", "site-example", "8.4", Resources{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestProvisionerCreatesIsolatedUserAndDocumentRoot(t *testing.T) {
 }
 
 func TestProvisionerRejectsUnsafeDomain(t *testing.T) {
-	_, err := (Provisioner{Runner: &fakeRunner{}, Store: NewMemoryStateStore()}).Create("../escape", "site-example", "8.4")
+	_, err := (Provisioner{Runner: &fakeRunner{}, Store: NewMemoryStateStore()}).Create("../escape", "site-example", "8.4", Resources{})
 	if err == nil {
 		t.Fatal("expected invalid domain")
 	}
@@ -71,7 +71,7 @@ func TestProvisionerRollsBackUserAndSiteDirectoryAfterValidationFailure(t *testi
 		SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
 		PHPConfigDir: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
 	}
-	_, err := (Provisioner{Runner: runner, Store: NewMemoryStateStore(), Layout: layout}).Create("example.com", "site-example", "8.4")
+	_, err := (Provisioner{Runner: runner, Store: NewMemoryStateStore(), Layout: layout}).Create("example.com", "site-example", "8.4", Resources{})
 	if err == nil {
 		t.Fatal("expected validation failure")
 	}
@@ -91,7 +91,7 @@ func TestProvisionerRemovesActivatedConfigsAfterReloadFailure(t *testing.T) {
 		SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
 		PHPConfigDir: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
 	}
-	_, err := (Provisioner{Runner: runner, Store: NewMemoryStateStore(), Layout: layout}).Create("example.com", "site-example", "8.4")
+	_, err := (Provisioner{Runner: runner, Store: NewMemoryStateStore(), Layout: layout}).Create("example.com", "site-example", "8.4", Resources{})
 	if err == nil {
 		t.Fatal("expected reload failure")
 	}
@@ -111,7 +111,7 @@ func TestProvisionerChangesPHPVersionAndPersistsState(t *testing.T) {
 		PHPConfigRoot: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
 	}
 	provisioner := Provisioner{Runner: runner, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := provisioner.SetPHPVersion("example.com", "8.5")
@@ -140,7 +140,7 @@ func TestProvisionerRollsBackPHPVersionWhenReloadFails(t *testing.T) {
 		PHPConfigRoot: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
 	}
 	provisioner := Provisioner{Runner: runner, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	runner.failAt = "systemctl"
@@ -231,7 +231,7 @@ func TestReconcileDetectsModifiedPHPConfiguration(t *testing.T) {
 	}
 	store := NewMemoryStateStore()
 	provisioner := Provisioner{Runner: &fakeRunner{}, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	phpPath := filepath.Join(layout.PHPConfigRoot, "8.4", "fpm", "pool.d", "site-example.conf")
@@ -256,7 +256,7 @@ func TestSuspendAndResumeMoveCaddyConfiguration(t *testing.T) {
 	}
 	store := NewMemoryStateStore()
 	provisioner := Provisioner{Runner: &fakeRunner{}, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provisioner.Suspend("example.com"); err != nil {
@@ -283,7 +283,7 @@ func TestAddAndRemoveDomainUpdatesCaddyAndState(t *testing.T) {
 	layout := Layout{SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"), PHPConfigRoot: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging")}
 	store := NewMemoryStateStore()
 	provisioner := Provisioner{Runner: &fakeRunner{}, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provisioner.AddDomain("example.com", "www.example.com"); err != nil {
@@ -311,7 +311,7 @@ func TestDeleteRequiresSuspensionAndArchivesSite(t *testing.T) {
 	}
 	store := NewMemoryStateStore()
 	provisioner := Provisioner{Runner: &fakeRunner{}, Store: store, Layout: layout}
-	if _, err := provisioner.Create("example.com", "site-example", "8.4"); err != nil {
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provisioner.Delete("example.com", true); err == nil {
@@ -354,4 +354,65 @@ func containsCall(calls [][]string, want []string) bool {
 	}
 
 	return false
+}
+
+func TestSetResourcesRewritesThePoolAndRemembersIt(t *testing.T) {
+	runner := &fakeRunner{}
+	base := t.TempDir()
+	layout := Layout{
+		SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
+		PHPConfigRoot: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
+	}
+	store := NewMemoryStateStore()
+	provisioner := Provisioner{Runner: runner, Store: store, Layout: layout}
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := provisioner.SetResources("example.com", Resources{Workers: 20, MemoryLimitMB: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Previous != DefaultResources() {
+		t.Fatalf("the previous tier was not reported: %#v", applied.Previous)
+	}
+
+	pool, err := os.ReadFile(filepath.Join(base, "php", "8.4", "fpm", "pool.d", "site-example.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pool), "pm.max_children = 20") {
+		t.Fatalf("the new limits were not written:\n%s", pool)
+	}
+
+	// Remembered on the site, so a later version change or drift check rebuilds
+	// the pool with what the site was sold rather than the default tier.
+	state, _ := store.Get("example.com")
+	if state.Resources.Workers != 20 || state.Resources.MemoryLimitMB != 512 {
+		t.Fatalf("the limits were not persisted: %#v", state.Resources)
+	}
+	if _, err := provisioner.SetPHPVersion("example.com", "8.5"); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := os.ReadFile(filepath.Join(base, "php", "8.5", "fpm", "pool.d", "site-example.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(migrated), "pm.max_children = 20") {
+		t.Fatalf("a version change reset the site to the default tier:\n%s", migrated)
+	}
+}
+
+func TestSetResourcesRefusesLimitsThatCouldSinkTheHost(t *testing.T) {
+	base := t.TempDir()
+	provisioner := Provisioner{Runner: &fakeRunner{}, Store: NewMemoryStateStore(), Layout: Layout{
+		SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
+		PHPConfigRoot: filepath.Join(base, "php"), StagingDir: filepath.Join(base, "staging"),
+	}}
+	if _, err := provisioner.Create("example.com", "site-example", "8.4", Resources{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provisioner.SetResources("example.com", Resources{Workers: 5000, MemoryLimitMB: 128}); err == nil {
+		t.Fatal("a worker count far outside the bounds was accepted")
+	}
 }

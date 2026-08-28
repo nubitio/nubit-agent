@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -11,12 +12,16 @@ import (
 
 type fakeSiteProvisioner struct{}
 
-func (fakeSiteProvisioner) Create(domain, user, phpVersion string) (site.CreateResult, error) {
+func (fakeSiteProvisioner) Create(domain, user, phpVersion string, resources site.Resources) (site.CreateResult, error) {
 	return site.CreateResult{SiteID: domain, DocumentRoot: "/srv/" + domain + "/public", PHPSocket: "/run/php/" + user + ".sock", CaddyConfigHash: "sha256:caddy", PHPConfigHash: "sha256:php"}, nil
 }
 
 func (fakeSiteProvisioner) Inspect(siteID string) (site.State, error) {
 	return site.State{SiteID: siteID, PHPVersion: "8.4"}, nil
+}
+
+func (fakeSiteProvisioner) SetResources(siteID string, resources site.Resources) (site.ResourcesResult, error) {
+	return site.ResourcesResult{SiteID: siteID, Previous: site.DefaultResources(), Resources: resources}, nil
 }
 
 func (fakeSiteProvisioner) SetPHPVersion(siteID, phpVersion string) (site.PHPVersionResult, error) {
@@ -120,7 +125,7 @@ func TestExecutorInspectsSite(t *testing.T) {
 
 func TestExecutorChangesPHPVersion(t *testing.T) {
 	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
-	result, err := executor.Execute(Command{ID: "cmd_php", Type: PHPSetVersion, Version: 1, IdempotencyKey: "site:php", Payload: []byte(`{"siteId":"example.com","phpVersion":"8.5"}`)})
+	result, err := executor.Execute(Command{ID: "cmd_php", Type: RuntimeSetVersion, Version: 1, IdempotencyKey: "site:php", Payload: []byte(`{"siteId":"example.com","phpVersion":"8.5"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +140,7 @@ func TestExecutorChangesPHPVersion(t *testing.T) {
 
 func TestExecutorRequiresConfirmationToRemoveRuntime(t *testing.T) {
 	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
-	_, err := executor.Execute(Command{ID: "cmd_remove", Type: PHPRuntimeRemove, Version: 1, IdempotencyKey: "php:remove", Payload: []byte(`{"phpVersion":"8.3","confirm":false}`)})
+	_, err := executor.Execute(Command{ID: "cmd_remove", Type: RuntimeRemove, Version: 1, IdempotencyKey: "php:remove", Payload: []byte(`{"phpVersion":"8.3","confirm":false}`)})
 	if err == nil {
 		t.Fatal("expected explicit confirmation to be required")
 	}
@@ -143,7 +148,7 @@ func TestExecutorRequiresConfirmationToRemoveRuntime(t *testing.T) {
 
 func TestExecutorReportsRuntimeInventory(t *testing.T) {
 	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
-	result, err := executor.Execute(Command{ID: "cmd_runtimes", Type: PHPRuntimeInspect, Version: 1, IdempotencyKey: "php:inspect", Payload: []byte(`{}`)})
+	result, err := executor.Execute(Command{ID: "cmd_runtimes", Type: RuntimeInspect, Version: 1, IdempotencyKey: "php:inspect", Payload: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,5 +234,39 @@ func TestExecutorSerializesDuplicateCommands(t *testing.T) {
 	}
 	if results[0].CommandID != results[1].CommandID {
 		t.Fatalf("expected the stored result, got %q and %q", results[0].CommandID, results[1].CommandID)
+	}
+}
+
+// A control plane that says nothing about limits must still get a site, on the
+// tier every site had before plans could set them.
+func TestSiteCreateWithoutResourcesUsesTheSharedTier(t *testing.T) {
+	request, err := parseSiteCreate([]byte(`{"domain":"example.com","systemUser":"site-example","phpVersion":"8.4"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Resources != site.DefaultResources() {
+		t.Fatalf("an absent plan did not fall back: %#v", request.Resources)
+	}
+}
+
+func TestSiteResourcesAreBoundedAtTheCommandBoundary(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
+	_, err := executor.Execute(Command{
+		ID: "cmd_resources", Type: SiteSetResources, Version: 1, IdempotencyKey: "site:resources",
+		Payload: []byte(`{"siteId":"example.com","resources":{"workers":9000,"memoryLimitMb":128}}`),
+	})
+	if err == nil {
+		t.Fatal("a worker count far outside the bounds reached the provisioner")
+	}
+
+	result, err := executor.Execute(Command{
+		ID: "cmd_resources_ok", Type: SiteSetResources, Version: 1, IdempotencyKey: "site:resources:ok",
+		Payload: []byte(`{"siteId":"example.com","resources":{"workers":20,"memoryLimitMb":512}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(result.Output), `"workers":20`) {
+		t.Fatalf("the applied limits were not reported: %s", result.Output)
 	}
 }

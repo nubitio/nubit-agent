@@ -42,7 +42,7 @@ const WebServerUser = "caddy"
 // Memory is bounded here and nowhere else. All the pools of one PHP version are
 // children of a single systemd unit, so a cgroup cannot be aimed at an
 // individual site; pm.max_children multiplied by memory_limit is the real
-// ceiling, and at 5 x 128M it is 640 MiB per site.
+// ceiling, and the plan the site was sold on is what sets both.
 const poolTemplate = `[%[1]s]
 user = %[1]s
 group = %[1]s
@@ -52,7 +52,7 @@ listen.group = %[3]s
 listen.mode = 0660
 
 pm = ondemand
-pm.max_children = 5
+pm.max_children = %[5]d
 ; The worker dies with its opcache, so a short timeout makes a low-traffic site
 ; recompile on nearly every visit.
 pm.process_idle_timeout = 60s
@@ -61,7 +61,7 @@ pm.process_idle_timeout = 60s
 request_terminate_timeout = 60s
 
 chdir = %[4]s
-php_admin_value[memory_limit] = 128M
+php_admin_value[memory_limit] = %[6]dM
 ; The tenant's unix user stops it writing outside the site. This stops it
 ; reading outside, which unix permissions alone would still allow.
 php_admin_value[open_basedir] = %[4]s/:/usr/share/php/
@@ -73,8 +73,14 @@ php_admin_value[error_log] = /var/log/nubit/%[1]s.php.log
 php_admin_flag[log_errors] = on
 `
 
-func PHPFPMConfig(user, root, socket string) string {
-	return fmt.Sprintf(poolTemplate, user, socket, WebServerUser, root)
+func PHPFPMConfig(user, root, socket string, resources Resources) string {
+	resources = resources.WithDefaults()
+
+	return fmt.Sprintf(
+		poolTemplate,
+		user, socket, WebServerUser, root,
+		resources.Workers, resources.MemoryLimitMB,
+	)
 }
 
 func DefaultIndexHTML(domain string) string {

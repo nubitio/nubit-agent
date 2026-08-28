@@ -61,9 +61,9 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
   `POST /api/agent/jobs/{id}/result` against Nubit Control, authenticated with
   the controlled temporary `NUBIT_AGENT_TOKEN` in `X-Agent-Token`.
 - Persistent local site inventory exposed through `site.inspect`.
-- PHP runtime lifecycle catalog and rollback-safe `php.set-version`; deprecated
+- PHP runtime lifecycle catalog and rollback-safe `runtime.set-version`; deprecated
   runtimes continue serving existing sites but cannot receive new sites.
-- Runtime inventory and explicitly confirmed `php.runtime.remove`, guarded by
+- Runtime inventory and explicitly confirmed `runtime.remove`, guarded by
   lifecycle status and a zero-site usage check.
 - Persistent result outbox replayed before fetching new work, preventing a
   temporary Control outage or agent restart from losing command outcomes.
@@ -152,7 +152,7 @@ transport migration are pending; neither is deployed or validated end to end:
 4. `site.delete` (implemented)
 5. `site.add-domain` (implemented)
 6. `site.remove-domain` (implemented)
-7. `php.set-version` (implemented)
+7. `runtime.set-version` (implemented)
 8. `site.inspect` (implemented)
 
 Each command must define validation, idempotency identity, expected files,

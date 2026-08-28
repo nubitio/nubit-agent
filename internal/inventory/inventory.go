@@ -45,7 +45,7 @@ func Collect(provider RuntimeProvider) (Snapshot, error) {
 		CollectedAt: time.Now().UTC(), OS: readOSRelease(), Architecture: runtime.GOARCH,
 		MemoryBytes: memoryBytes(), DiskBytes: diskTotal, DiskFree: diskFree,
 		IPAddresses: ipAddresses(), Packages: packageVersions(),
-		Capabilities: []string{"system.reconcile", "site.create", "site.inspect", "site.suspend", "site.resume", "site.delete", "site.add-domain", "site.remove-domain", "php.set-version", "php.runtime.inspect", "php.runtime.remove", "sftp.create", "sftp.update-key", "sftp.revoke", "database.create", "database.rotate-password", "database.delete", "site.files.list", "site.files.mkdir", "site.files.write", "site.files.read", "site.files.delete", "site.files.unzip", "site.files.rename", "site.usage", "site.logs.read", "site.cron.list", "site.cron.replace", "site.backup.list", "site.backup.create", "site.backup.restore"},
+		Capabilities: []string{"system.reconcile", "site.create", "site.inspect", "site.suspend", "site.resume", "site.delete", "site.add-domain", "site.remove-domain", "site.set-resources", "runtime.set-version", "runtime.inspect", "runtime.remove", "sftp.create", "sftp.update-key", "sftp.revoke", "database.create", "database.rotate-password", "database.delete", "site.files.list", "site.files.mkdir", "site.files.write", "site.files.read", "site.files.delete", "site.files.unzip", "site.files.rename", "site.usage", "site.logs.read", "site.cron.list", "site.cron.replace", "site.backup.list", "site.backup.create", "site.backup.restore"},
 		PHPRuntimes:  phpRuntimes,
 	}, nil
 }

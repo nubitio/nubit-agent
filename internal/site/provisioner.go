@@ -45,7 +45,7 @@ type Provisioner struct {
 
 var safeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 
-func (p Provisioner) Create(domain, systemUser, phpVersion string) (result CreateResult, err error) {
+func (p Provisioner) Create(domain, systemUser, phpVersion string, resources Resources) (result CreateResult, err error) {
 	if p.Runner == nil {
 		return result, errors.New("site provisioner runner is required")
 	}
@@ -59,6 +59,10 @@ func (p Provisioner) Create(domain, systemUser, phpVersion string) (result Creat
 		return result, errors.New("site system user is invalid")
 	}
 	if validateErr := php.ValidateInstalled(phpVersion, time.Now().UTC()); validateErr != nil {
+		return result, validateErr
+	}
+	resources = resources.WithDefaults()
+	if validateErr := resources.Validate(); validateErr != nil {
 		return result, validateErr
 	}
 	layout := p.layoutFor(phpVersion)
@@ -77,7 +81,7 @@ func (p Provisioner) Create(domain, systemUser, phpVersion string) (result Creat
 		}
 	}
 	caddy := []byte(CaddyConfig(domain, documentRoot, socket))
-	php := []byte(PHPFPMConfig(systemUser, siteRoot, socketName))
+	php := []byte(PHPFPMConfig(systemUser, siteRoot, socketName, resources))
 	if err = os.MkdirAll(layout.StagingDir, 0o700); err != nil {
 		return result, fmt.Errorf("create staging directory: %w", err)
 	}
@@ -165,7 +169,7 @@ func (p Provisioner) Create(domain, systemUser, phpVersion string) (result Creat
 		return result, err
 	}
 	result = CreateResult{domain, documentRoot, socket, fmt.Sprintf("sha256:%x", sha256.Sum256(caddy)), fmt.Sprintf("sha256:%x", sha256.Sum256(php))}
-	if err = p.Store.Save(State{SiteID: domain, Domain: domain, SystemUser: systemUser, PHPVersion: phpVersion, DocumentRoot: documentRoot, PHPSocket: socket, Status: "active", Domains: []string{domain}}); err != nil {
+	if err = p.Store.Save(State{SiteID: domain, Domain: domain, SystemUser: systemUser, PHPVersion: phpVersion, DocumentRoot: documentRoot, PHPSocket: socket, Status: "active", Domains: []string{domain}, Resources: resources}); err != nil {
 		return CreateResult{}, fmt.Errorf("persist site state: %w", err)
 	}
 	return result, nil
@@ -470,7 +474,7 @@ func (p Provisioner) SetPHPVersion(siteID, version string) (result PHPVersionRes
 	if err != nil {
 		return result, fmt.Errorf("read current PHP configuration: %w", err)
 	}
-	newConfig := []byte(PHPFPMConfig(state.SystemUser, filepath.Dir(state.DocumentRoot), filepath.Base(state.PHPSocket)))
+	newConfig := []byte(PHPFPMConfig(state.SystemUser, filepath.Dir(state.DocumentRoot), filepath.Base(state.PHPSocket), state.Resources))
 	if err = os.MkdirAll(newLayout.StagingDir, 0o700); err != nil {
 		return result, fmt.Errorf("create staging directory: %w", err)
 	}
@@ -512,6 +516,77 @@ func (p Provisioner) SetPHPVersion(siteID, version string) (result PHPVersionRes
 	}
 	migrationStarted = false
 	return PHPVersionResult{siteID, previous, version, state.PHPSocket, fmt.Sprintf("sha256:%x", sha256.Sum256(newConfig))}, nil
+}
+
+type ResourcesResult struct {
+	SiteID        string    `json:"siteId"`
+	Previous      Resources `json:"previous"`
+	Resources     Resources `json:"resources"`
+	PHPConfigHash string    `json:"phpConfigHash"`
+}
+
+// SetResources reapplies a site's limits after its plan changes.
+//
+// The pool file is the only thing that moves, so unlike a version change there
+// is no second runtime to fail over to: the previous contents are kept and put
+// back if the new ones do not survive validation or the reload.
+func (p Provisioner) SetResources(siteID string, resources Resources) (result ResourcesResult, err error) {
+	if p.Runner == nil || p.Store == nil {
+		return result, errors.New("site provisioner runner and state store are required")
+	}
+	resources = resources.WithDefaults()
+	if validateErr := resources.Validate(); validateErr != nil {
+		return result, validateErr
+	}
+	state, found := p.Store.Get(siteID)
+	if !found {
+		return result, errors.New("site not found")
+	}
+	previous := state.Resources.WithDefaults()
+
+	layout := p.layoutFor(state.PHPVersion)
+	path := filepath.Join(layout.PHPConfigDir, state.SystemUser+".conf")
+	config := []byte(PHPFPMConfig(state.SystemUser, filepath.Dir(state.DocumentRoot), filepath.Base(state.PHPSocket), resources))
+	if previous == resources {
+		return ResourcesResult{siteID, previous, resources, fmt.Sprintf("sha256:%x", sha256.Sum256(config))}, nil
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return result, fmt.Errorf("read current PHP configuration: %w", err)
+	}
+	if err = os.MkdirAll(layout.StagingDir, 0o700); err != nil {
+		return result, fmt.Errorf("create staging directory: %w", err)
+	}
+	staged, err := stageFile(layout.StagingDir, "php-fpm-", config)
+	if err != nil {
+		return result, err
+	}
+	defer os.Remove(staged)
+	if err = p.run("php-fpm"+state.PHPVersion, "--test", "--fpm-config", staged); err != nil {
+		return result, err
+	}
+	if err = activateFile(staged, path); err != nil {
+		return result, err
+	}
+
+	applied := true
+	defer func() {
+		if err == nil || !applied {
+			return
+		}
+		_ = activateContents(current, path)
+		_ = p.Runner.Run("systemctl", "reload", "php"+state.PHPVersion+"-fpm")
+	}()
+	if err = p.run("systemctl", "reload", "php"+state.PHPVersion+"-fpm"); err != nil {
+		return result, err
+	}
+	state.Resources = resources
+	if err = p.Store.Save(state); err != nil {
+		return result, fmt.Errorf("persist site state: %w", err)
+	}
+	applied = false
+
+	return ResourcesResult{siteID, previous, resources, fmt.Sprintf("sha256:%x", sha256.Sum256(config))}, nil
 }
 
 type RuntimeInfo struct {
@@ -619,7 +694,7 @@ func (p Provisioner) Reconcile() ([]Drift, error) {
 		}
 		phpPath := filepath.Join(layout.PHPConfigDir, state.SystemUser+".conf")
 		if contents, err := os.ReadFile(phpPath); err == nil {
-			expected := []byte(PHPFPMConfig(state.SystemUser, filepath.Dir(state.DocumentRoot), filepath.Base(state.PHPSocket)))
+			expected := []byte(PHPFPMConfig(state.SystemUser, filepath.Dir(state.DocumentRoot), filepath.Base(state.PHPSocket), state.Resources))
 			if sha256.Sum256(contents) != sha256.Sum256(expected) {
 				drifts = append(drifts, Drift{state.SiteID, "phpConfig", fmt.Sprintf("sha256:%x", sha256.Sum256(expected)), fmt.Sprintf("sha256:%x", sha256.Sum256(contents))})
 			}

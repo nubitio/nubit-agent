@@ -39,7 +39,7 @@ func TestASiteActuallyServes(t *testing.T) {
 	const domain, user, version = "example.pe", "site-alpha", "8.4"
 	const host = domain + ".localhost"
 	provisioner := Provisioner{Runner: OSRunner{}, Layout: DefaultLayout(version), Store: NewMemoryStateStore()}
-	created, err := provisioner.Create(domain, user, version)
+	created, err := provisioner.Create(domain, user, version, Resources{})
 	if err != nil {
 		t.Fatalf("create site: %v", err)
 	}

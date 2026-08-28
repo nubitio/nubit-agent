@@ -19,6 +19,10 @@ type State struct {
 	Domains      []string `json:"domains"`
 	Databases    []string `json:"databases,omitempty"`
 	SFTPEnabled  bool     `json:"sftpEnabled"`
+	// Kept with the site so every path that regenerates the pool — a version
+	// change, a drift check — rebuilds it with the limits the site was sold,
+	// instead of quietly resetting it to the default tier.
+	Resources Resources `json:"resources"`
 }
 
 type StateStore interface {

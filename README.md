@@ -33,7 +33,7 @@ Agent-supported command families known in this codebase are:
 | --- | --- | --- |
 | system | `system.ping`, `system.reconcile` | Supported by Agent. |
 | site | `site.create`, `site.inspect`, `site.suspend`, `site.resume`, `site.delete`, `site.add-domain`, `site.remove-domain`, `site.usage` | Core site lifecycle is supported by Agent; Control lifecycle coverage is partial and must be validated per flow. |
-| php | `php.set-version`, `php.runtime.inspect`, `php.runtime.remove` | Supported by Agent; runtime removal remains an explicit operator/lifecycle action. |
+| php | `runtime.set-version`, `runtime.inspect`, `runtime.remove` | Supported by Agent; runtime removal remains an explicit operator/lifecycle action. |
 | sftp | `sftp.create`, `sftp.update-key`, `sftp.revoke` | Supported by Agent; Control queues create/update in current portal flows. |
 | database | `database.create`, `database.rotate-password`, `database.delete` | Supported by Agent; Control queues create and password rotation in current flows. |
 | files | `site.files.list`, `site.files.mkdir`, `site.files.write`, `site.files.read`, `site.files.delete`, `site.files.unzip`, `site.files.rename` | Supported by Agent and exposed through portal file operations; validate operational policy before broad enablement. |
@@ -179,8 +179,8 @@ new sites and migrations into 8.3 are rejected. Every `site.create` command
 must specify its `phpVersion`, and each site gets a pool and socket owned by
 that version's FPM service.
 
-`php.runtime.inspect` reports installation state, lifecycle status, security
-deadline, and site count for every known runtime. `php.runtime.remove` requires
+`runtime.inspect` reports installation state, lifecycle status, security
+deadline, and site count for every known runtime. `runtime.remove` requires
 `{"phpVersion":"8.3","confirm":true}` and refuses supported versions or any
 runtime still referenced by a site.
 

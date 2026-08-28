@@ -41,7 +41,7 @@ func TestCreateSiteOnDebian12(t *testing.T) {
 	for _, version := range []string{"8.3", "8.4", "8.5"} {
 		domain := "php" + strings.ReplaceAll(version, ".", "") + ".integration.example.com"
 		user := "nubit-int-" + strings.ReplaceAll(version, ".", "")
-		result, err := (Provisioner{Runner: OSRunner{}, Layout: layout, Store: store}).Create(domain, user, version)
+		result, err := (Provisioner{Runner: OSRunner{}, Layout: layout, Store: store}).Create(domain, user, version, Resources{})
 		if err != nil {
 			t.Fatalf("PHP %s: %v", version, err)
 		}

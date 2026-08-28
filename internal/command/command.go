@@ -14,9 +14,15 @@ const SiteResume = "site.resume"
 const SiteAddDomain = "site.add-domain"
 const SiteRemoveDomain = "site.remove-domain"
 const SiteDelete = "site.delete"
-const PHPSetVersion = "php.set-version"
-const PHPRuntimeInspect = "php.runtime.inspect"
-const PHPRuntimeRemove = "php.runtime.remove"
+const SiteSetResources = "site.set-resources"
+
+// The runtime commands are deliberately not named after PHP. A site's runtime
+// is what they set and inspect, and PHP is only the provider that exists today;
+// naming them php.* would leave the container runtime either renaming a
+// published command or arriving as a second namespace that does the same thing.
+const RuntimeSetVersion = "runtime.set-version"
+const RuntimeInspect = "runtime.inspect"
+const RuntimeRemove = "runtime.remove"
 const SystemReconcile = "system.reconcile"
 const SFTPCreate = "sftp.create"
 const SFTPUpdateKey = "sftp.update-key"
