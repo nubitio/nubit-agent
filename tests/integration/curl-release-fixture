@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+# The installer must download and checksum-verify a release. Serve the binary
+# built from this checkout only for that release URL; delegate all package and
+# PPA traffic to the real curl installed in the Ubuntu image.
+arguments=$*
+case "$arguments" in
+  *github.com/integration/nubit-agent/releases/download/v0.0.0-integration/nubit-agent_linux_amd64*|*github.com/integration/nubit-agent/releases/download/v0.0.0-integration/nubit-agent_linux_arm64*)
+    output=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o) shift; output=$1 ;;
+      esac
+      shift
+    done
+    [ -n "$output" ]
+    case "$arguments" in
+      *nubit-agent_linux_amd64*) cp /fixture/nubit-agent_linux_amd64 "$output" ;;
+      *) cp /fixture/nubit-agent_linux_arm64 "$output" ;;
+    esac
+    ;;
+  *github.com/integration/nubit-agent/releases/download/v0.0.0-integration/SHA256SUMS*)
+    output=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o) shift; output=$1 ;;
+      esac
+      shift
+    done
+    [ -n "$output" ]
+    cp /fixture/SHA256SUMS "$output"
+    ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac

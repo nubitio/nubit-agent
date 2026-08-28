@@ -1,0 +1,23 @@
+FROM golang:1.25-bookworm AS build
+
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /release/nubit-agent_linux_amd64 ./cmd/nubit-agent \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /release/nubit-agent_linux_arm64 ./cmd/nubit-agent \
+    && (cd /release && sha256sum nubit-agent_linux_amd64 nubit-agent_linux_arm64 > SHA256SUMS)
+
+FROM ubuntu:26.04
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tests/integration/curl-release-fixture /usr/local/bin/curl
+COPY tests/integration/systemctl-installer /usr/local/bin/systemctl
+COPY --from=build /release /fixture
+COPY . /src
+
+RUN chmod 0755 /usr/local/bin/curl /usr/local/bin/systemctl
+
+WORKDIR /src
+CMD ["sh", "scripts/test-installer-ubuntu2604.sh"]

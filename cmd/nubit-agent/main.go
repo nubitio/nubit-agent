@@ -26,6 +26,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/mail"
 	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
+	"github.com/nubitio/nubit-agent/internal/tls"
 	"github.com/nubitio/nubit-agent/internal/version"
 )
 
@@ -67,7 +68,12 @@ func main() {
 	cronManager := cron.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "cron")}
 	logManager := logs.Manager{Sites: siteStore}
 	backupManager := backup.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "backups")}
-	services := []any{provisioner, sftp, databases, fileManager, cronManager, logManager, backupManager}
+	// Caddy's storage location is overridable because a host that installed it
+	// some other way puts it elsewhere.
+	certificates := tls.Inspector{StorageDir: os.Getenv("NUBIT_CADDY_CERTIFICATE_DIR")}
+	services := []any{
+		provisioner, sftp, databases, fileManager, cronManager, logManager, backupManager, certificates,
+	}
 	if mailManager, ok := mailProvisioner(); ok {
 		services = append(services, mailManager)
 	}

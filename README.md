@@ -3,22 +3,48 @@
 Nubit Agent applies a closed, versioned set of infrastructure commands for one Nubit
 server. It is not a remote shell and does not execute arbitrary user input.
 
+The confirmed MVP operating baseline is recorded in
+[`docs/adr/ADR-001-mvp-hosting-platform-baseline.md`](docs/adr/ADR-001-mvp-hosting-platform-baseline.md).
+For the current MVP, Debian 12 and Ubuntu 26.04 on amd64 are the supported
+web-profile platforms. Ubuntu 26.04 amd64 support includes operator-external
+evidence: the operator ran `scripts/test-installer-ubuntu2604-systemd.sh
+--version <tag>` on a real Ubuntu 26.04 amd64 VM and confirmed OK; no local
+artifact is present in this repository. arm64 is outside the MVP and is not
+supported. See
+[`docs/adr/ADR-002-mvp-platform-validation.md`](docs/adr/ADR-002-mvp-platform-validation.md)
+and
+[`docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md`](docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md).
+The operational documentation boundary for T01 is in
+[`docs/adr/ADR-004-mvp-operational-documentation-boundary.md`](docs/adr/ADR-004-mvp-operational-documentation-boundary.md).
+
 ## Current scope
 
 The initial implementation provides a local health endpoint, an idempotent command
 executor, and an agent-initiated polling transport to Nubit Control. Completed command
 results are persisted at `/var/lib/nubit-agent/commands.json` by default so a retry
-after restart does not repeat a provisioning action. The executor supports
-`system.ping`, `system.reconcile`, the complete site lifecycle (`site.create`,
-`site.inspect`, `site.suspend`, `site.resume`, `site.delete`, domain aliases), `php.set-version`,
-`php.runtime.inspect`, and `php.runtime.remove`. Local site state is persisted
+after restart does not repeat a provisioning action. Local site state is persisted
 separately in `/var/lib/nubit-agent/sites.json`.
 Results awaiting acknowledgement from Control are durably queued in
 `/var/lib/nubit-agent/outbox.json` and replayed before new jobs are fetched.
 
+Agent-supported command families known in this codebase are:
+
+| Family | Agent-supported command types | MVP / Control readiness |
+| --- | --- | --- |
+| system | `system.ping`, `system.reconcile` | Supported by Agent. |
+| site | `site.create`, `site.inspect`, `site.suspend`, `site.resume`, `site.delete`, `site.add-domain`, `site.remove-domain`, `site.usage` | Core site lifecycle is supported by Agent; Control lifecycle coverage is partial and must be validated per flow. |
+| php | `php.set-version`, `php.runtime.inspect`, `php.runtime.remove` | Supported by Agent; runtime removal remains an explicit operator/lifecycle action. |
+| sftp | `sftp.create`, `sftp.update-key`, `sftp.revoke` | Supported by Agent; Control queues create/update in current portal flows. |
+| database | `database.create`, `database.rotate-password`, `database.delete` | Supported by Agent; Control queues create and password rotation in current flows. |
+| files | `site.files.list`, `site.files.mkdir`, `site.files.write`, `site.files.read`, `site.files.delete`, `site.files.unzip`, `site.files.rename` | Supported by Agent and exposed through portal file operations; validate operational policy before broad enablement. |
+| cron | `site.cron.list`, `site.cron.replace` | Supported by Agent; lifecycle/control policy remains pending. |
+| logs | `site.logs.read` | Supported by Agent; operational exposure policy remains pending. |
+| backup | `site.backup.list`, `site.backup.create`, `site.backup.restore` | Agent currently performs local `.tar.gz` archives with fixed retention. This is not the approved sellable MVP backup product; S3 + tiers/RPO/RTO convergence is pending. |
+| mail | `mail.domain.create`, `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`, `mail.mailbox.set-quota`, `mail.mailbox.delete`, `mail.inventory` | Agent capability exists when mail is configured; complete Control lifecycle and mailbox restore automation remain pending. |
+
 ## Install
 
-On a Debian 12 server, as root:
+For a supported Debian 12 or Ubuntu 26.04 amd64 server, run as root:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/install.sh | sh
@@ -27,14 +53,28 @@ curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/in
 That installs the released binary at `/usr/local/bin/nubit-agent`, creates
 `/etc/nubit-agent` and `/var/lib/nubit-agent` with strict permissions, and
 enables the `nubit-agent` systemd unit. Add `--profile web` to also install the
-Debian 12 web profile packages, and `--control-url` / `--enrollment-token` to
-write enrollment straight into `/etc/nubit-agent/agent.env`:
+web-profile packages for the target distribution. For the operational MVP, issue
+an opaque server token in Nubit Control with `POST /api/servers/{id}/rotate-token`
+and configure it as `NUBIT_AGENT_TOKEN`; the Agent sends it on every poll as
+`X-Agent-Token`.
 
 ```bash
 sh install.sh --profile web \
-  --control-url https://control.example.com \
-  --enrollment-token <one-time token>
+  --control-url https://control.example.com
+
+sudo install -m 0600 /dev/null /etc/nubit-agent/agent.env
+sudo sh -c 'cat > /etc/nubit-agent/agent.env' <<'EOF'
+NUBIT_CONTROL_URL=https://control.example.com
+NUBIT_AGENT_TOKEN=<token returned once by Control>
+EOF
+sudo systemctl restart nubit-agent
 ```
+
+Do **not** use `--enrollment-token` / `NUBIT_AGENT_ENROLLMENT_TOKEN` for the
+current MVP. That path is Agent-side partial/future mTLS code. Current Nubit
+Control does not expose `POST /api/agent/enroll`; if an enrollment token is set
+and no certificate is present, the Agent attempts enrollment and can fail at
+startup. mTLS enrollment and renewal remain pending work.
 
 `--dry-run` prints every action without touching the machine, and `--version
 <tag>` pins a specific release. Re-running the installer upgrades in place.
@@ -90,34 +130,50 @@ Every poll (`GET /api/agent/jobs`, `X-Agent-Token` header — deliberately not
 `Authorization: Bearer`, so these requests never reach Nubit Control's user-facing JWT
 authenticator) also doubles as a heartbeat: Nubit Control marks the server `online` with
 a fresh `lastSeenAt`. Results go back via `POST /api/agent/jobs/{id}/result`. This is an
-interim transport — see `docs/roadmap.md` for the planned move to agent-initiated mTLS.
+interim transport: the MVP continues to use the controlled temporary token in
+`X-Agent-Token`. See `docs/roadmap.md` for the pending mTLS migration.
 The agent also publishes OS, architecture, memory, disk, IP, relevant package
 versions, capabilities, and PHP runtime usage to `POST /api/agent/inventory`
 at startup and every five minutes.
+
+When mTLS credentials are absent, the Agent has enrollment-side behavior: it
+attempts `POST /api/agent/enroll` with a CSR and the enrollment token, persists
+the generated key, issued certificate, and CA material, and provides for
+renewal. Nubit Control does not currently expose the `enroll` or `renew`
+endpoints. Consequently, the end-to-end enrollment contract and mTLS transport
+have not been deployed or validated; configuring an enrollment token against
+current Control can fail Agent startup. This is pending/future code, not an
+operational MVP capability.
 
 ## Security model
 
 - Commands have a version and an idempotency key.
 - Unknown command types fail closed.
-- The control-plane transport is agent-initiated polling today, bearer-token
-  authenticated per server; a future revision moves it to agent-initiated mTLS
-  (`docs/roadmap.md`).
+- The control-plane transport is agent-initiated polling today, authenticated
+  per server with `NUBIT_AGENT_TOKEN` in `X-Agent-Token`. The controlled
+  temporary-token MVP remains in place while the end-to-end mTLS contract and
+  migration remain pending (`docs/roadmap.md`).
 - Privileged hosting operations are added one command type at a time with payload
   validation, tests, least privilege, and rollback behavior.
 
-## Debian 12 web profile
+## Debian 12 and Ubuntu 26.04 amd64 web-profile support
 
-The first supported profile is Debian 12 with Caddy, PHP-FPM, PostgreSQL, and native
-SFTP through OpenSSH. Review its actions before running it:
+The web-profile is supported on Debian 12 amd64 and Ubuntu 26.04 amd64, with Caddy,
+PHP-FPM, PostgreSQL, and native SFTP through OpenSSH. Ubuntu 26.04 amd64 has an
+operator-external real-VM systemd validation confirmation and no local artifact
+in this repository. arm64 is outside the MVP and is rejected by the installer
+because it is not supported. Review the installation actions before running them:
 
 ```bash
 sudo sh scripts/install.sh --dry-run --profile web
 sudo sh scripts/install.sh --profile web
 ```
 
-The web profile enables the `packages.sury.org` PHP repository and installs
-PHP-FPM 8.3, 8.4, and 8.5 side by side. New sites should use PHP 8.4 by
-default; 8.5 is available for applications validated on the newest branch.
+On Debian and Ubuntu it enables the `packages.sury.org` PHP repository with a
+dedicated keyring, verifies the expected archive-key fingerprint, pins Sury as a
+PHP-only package source, and installs PHP-FPM 8.3, 8.4, and 8.5 side by side.
+New sites should use PHP 8.4 by default; 8.5 is available for applications
+validated on the newest branch.
 PHP 8.3 is deprecated: existing sites keep running and can migrate away, but
 new sites and migrations into 8.3 are rejected. Every `site.create` command
 must specify its `phpVersion`, and each site gets a pool and socket owned by
@@ -138,4 +194,14 @@ commands use fixed operations and send passwords through stdin; secrets are not
 returned in command results. Site deletion is blocked until SFTP access and
 owned databases have been removed.
 
-It does not yet install mail or FTP services.
+FTP is not installed by the web profile. The Agent has Stalwart/mail capability,
+but complete mailbox lifecycle integration is pending; mailbox restoration
+remains assisted for the MVP. See the MVP ADR before making mailbox or restore
+assumptions.
+
+The current Agent backup commands can create, list, and restore local `.tar.gz`
+archives under the Agent state directory and retain the latest seven archives.
+That behavior is useful implementation groundwork only. The approved MVP backup
+product remains S3-backed storage with the Basic/Business/Premium cadence,
+retention, RPO, and RTO in ADR-001; tier enforcement, S3 storage, restore
+rehearsals, and sales readiness remain pending.

@@ -45,6 +45,8 @@ const MailMailboxSetPassword = "mail.mailbox.set-password"
 const MailMailboxSetQuota = "mail.mailbox.set-quota"
 const MailMailboxDelete = "mail.mailbox.delete"
 const MailInventory = "mail.inventory"
+const TLSLetsEncryptEnable = "tls.letsencrypt.enable"
+const TLSCertificateInspect = "tls.certificate.inspect"
 
 type Command struct {
 	ID             string          `json:"id"`

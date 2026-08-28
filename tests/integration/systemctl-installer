@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+# Containers used by this test do not boot systemd. Record the real installer's
+# lifecycle requests so the generated unit and enable/restart contract are
+# verified without treating a dry run as an installation test.
+printf '%s\n' "$*" >> /tmp/nubit-agent-systemctl.log

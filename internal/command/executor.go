@@ -15,6 +15,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/logs"
 	"github.com/nubitio/nubit-agent/internal/mail"
 	"github.com/nubitio/nubit-agent/internal/site"
+	"github.com/nubitio/nubit-agent/internal/tls"
 )
 
 type Result struct {
@@ -65,6 +66,7 @@ type Executor struct {
 	logs    LogProvisioner
 	backups BackupProvisioner
 	mail    MailProvisioner
+	tls     TLSInspector
 }
 
 type SiteProvisioner interface {
@@ -85,6 +87,12 @@ type SFTPProvisioner interface {
 	Create(siteID, publicKey string) (access.Result, error)
 	UpdateKey(siteID, publicKey string) (access.Result, error)
 	Revoke(siteID string) (access.Result, error)
+}
+
+// TLSInspector reports the certificate Caddy holds for a site. It never reads
+// a private key: the control plane audits TLS, it does not hold it.
+type TLSInspector interface {
+	Inspect(siteID string) (tls.Evidence, error)
 }
 
 // MailProvisioner administers the mail server that runs beside the web stack.
@@ -156,6 +164,9 @@ func NewExecutor(store Store, services ...any) *Executor {
 		}
 		if mailManager, ok := service.(MailProvisioner); ok {
 			executor.mail = mailManager
+		}
+		if inspector, ok := service.(TLSInspector); ok {
+			executor.tls = inspector
 		}
 	}
 	return executor
@@ -450,6 +461,12 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, errors.New("mail provisioner is not configured")
 		}
 		output, err = executor.executeMail(command.Type, command.Payload)
+	case TLSLetsEncryptEnable, TLSCertificateInspect:
+		siteID, challengeType, domains, parseErr := parseTLSRequest(command.Type, command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		output, err = executor.executeTLS(siteID, challengeType, domains)
 	default:
 		return Result{}, errors.New("unsupported command type")
 	}
@@ -591,4 +608,53 @@ func (executor *Executor) executeMail(commandType string, payload json.RawMessag
 	}
 
 	return nil, errors.New("unsupported mail command")
+}
+
+// executeTLS reports the certificate the site actually has.
+//
+// Caddy issues and renews on its own; the agent's job is to say what came of
+// it. A site whose domain has not resolved yet has no certificate, and that is
+// reported as a state rather than raised as a failure — the control plane
+// re-asks, and a job that failed on a normal condition would only be retried
+// forever.
+func (executor *Executor) executeTLS(siteID, challengeType string, domains []string) ([]byte, error) {
+	if executor.tls == nil {
+		return nil, errors.New("TLS inspector is not configured")
+	}
+
+	evidence, err := executor.tls.Inspect(siteID)
+	if errors.Is(err, tls.ErrNoCertificate) {
+		return json.Marshal(map[string]any{
+			"siteId":           siteID,
+			"domains":          domains,
+			"challengeType":    challengeType,
+			"manager":          "caddy_automatic_tls",
+			"privateKeyStored": false,
+			"status":           "pending_certificate",
+			"message":          "Caddy has not issued a certificate for this site yet.",
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// The challenge type rides alongside rather than inside the status: the
+	// control plane allowlists it as its own field, and folding it into the
+	// status would make that value unpredictable to match on.
+	report := map[string]any{
+		"siteId":           evidence.SiteID,
+		"domains":          evidence.Domains,
+		"issuer":           evidence.Issuer,
+		"fingerprint":      evidence.Fingerprint,
+		"notBefore":        evidence.NotBefore,
+		"expiresAt":        evidence.ExpiresAt,
+		"manager":          evidence.Manager,
+		"status":           evidence.Status,
+		"privateKeyStored": evidence.PrivateKeyStored,
+	}
+	if challengeType != "" {
+		report["challengeType"] = challengeType
+	}
+
+	return json.Marshal(report)
 }
