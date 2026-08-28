@@ -18,7 +18,16 @@ type State struct {
 	Status       string   `json:"status"`
 	Domains      []string `json:"domains"`
 	Databases    []string `json:"databases,omitempty"`
-	SFTPEnabled  bool     `json:"sftpEnabled"`
+	// Database users exist apart from the databases they can open, the way a
+	// hosting panel presents them: one user may hold several databases, and a
+	// database may be reachable by several users.
+	DatabaseUsers []string `json:"databaseUsers,omitempty"`
+	// Grants maps a database to the users that may open it. Kept so deleting a
+	// database can tell whether a user it was paired with is still needed
+	// elsewhere, which is the difference between tidying up and cutting off
+	// another database.
+	DatabaseGrants map[string][]string `json:"databaseGrants,omitempty"`
+	SFTPEnabled    bool                `json:"sftpEnabled"`
 	// Kept with the site so every path that regenerates the pool — a version
 	// change, a drift check — rebuilds it with the limits the site was sold,
 	// instead of quietly resetting it to the default tier.

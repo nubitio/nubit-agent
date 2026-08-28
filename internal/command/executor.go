@@ -111,6 +111,10 @@ type DatabaseProvisioner interface {
 	Create(siteID, database, role, password string) (database.Result, error)
 	RotatePassword(siteID, database, role, password string) (database.Result, error)
 	Delete(siteID, database, role string, confirmed bool) (database.Result, error)
+	CreateUser(siteID, role, password string) (database.UserResult, error)
+	DeleteUser(siteID, role string, confirmed bool) (database.UserResult, error)
+	Grant(siteID, database, role string) (database.UserResult, error)
+	Revoke(siteID, database, role string) (database.UserResult, error)
 }
 
 type FilesProvisioner interface {
@@ -370,6 +374,36 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, databaseErr
 		}
 		output, err = json.Marshal(databaseResult)
+	case DatabaseUserCreate, DatabaseUserDelete, DatabaseGrant, DatabaseRevoke:
+		needsDatabase := command.Type == DatabaseGrant || command.Type == DatabaseRevoke
+		request, parseErr := parseDatabaseUser(
+			command.Payload,
+			command.Type == DatabaseUserCreate,
+			needsDatabase,
+			command.Type == DatabaseUserDelete,
+		)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.db == nil {
+			return Result{}, errors.New("database provisioner is not configured")
+		}
+		var userResult database.UserResult
+		var userErr error
+		switch command.Type {
+		case DatabaseUserCreate:
+			userResult, userErr = executor.db.CreateUser(request.SiteID, request.Role, request.Password)
+		case DatabaseUserDelete:
+			userResult, userErr = executor.db.DeleteUser(request.SiteID, request.Role, request.Confirm)
+		case DatabaseGrant:
+			userResult, userErr = executor.db.Grant(request.SiteID, request.Database, request.Role)
+		case DatabaseRevoke:
+			userResult, userErr = executor.db.Revoke(request.SiteID, request.Database, request.Role)
+		}
+		if userErr != nil {
+			return Result{}, userErr
+		}
+		output, err = json.Marshal(userResult)
 	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete, SiteFilesUnzip, SiteFilesRename:
 		request, parseErr := parseSiteFiles(command.Payload, command.Type)
 		if parseErr != nil {

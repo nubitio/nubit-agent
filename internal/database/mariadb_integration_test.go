@@ -135,3 +135,108 @@ type connectError struct {
 
 func (e *connectError) Error() string { return e.message }
 func (e *connectError) Unwrap() error { return e.cause }
+
+// A hosting account has more than one database user: the one its application
+// connects as, and the extra ones a customer makes for a second application or
+// a read-only tool. None of this SQL had ever been run against a server.
+func TestMariaDBUsersAreSeparateFromDatabases(t *testing.T) {
+	manager, store := realManager(t)
+	store.Save(site.State{SiteID: "example.pe", Domain: "example.pe"})
+
+	if _, err := manager.Create("example.pe", "shop_db", "shop_user", "shop-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateUser("example.pe", "reader", "reader-pw"); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// A user with no grant yet must not already be able to open the database.
+	if err := connect("reader", "reader-pw", "shop_db"); err == nil {
+		t.Fatal("a user with no grant opened the database")
+	}
+
+	if _, err := manager.Grant("example.pe", "shop_db", "reader"); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if err := connect("reader", "reader-pw", "shop_db"); err != nil {
+		t.Fatalf("the granted user cannot open the database: %v", err)
+	}
+
+	if _, err := manager.Revoke("example.pe", "shop_db", "reader"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := connect("reader", "reader-pw", "shop_db"); err == nil {
+		t.Fatal("the database is still open after the grant was revoked")
+	}
+
+	if _, err := manager.DeleteUser("example.pe", "reader", true); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if err := connect("reader", "reader-pw", "shop_db"); err == nil {
+		t.Fatal("a deleted user can still authenticate")
+	}
+}
+
+// Deleting one database must not cut off another that the same user holds.
+func TestMariaDBDeletingADatabaseKeepsAUserAnotherStillNeeds(t *testing.T) {
+	manager, store := realManager(t)
+	store.Save(site.State{SiteID: "example.pe", Domain: "example.pe"})
+
+	if _, err := manager.Create("example.pe", "first_db", "shared_user", "shared-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create("example.pe", "second_db", "second_owner", "second-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Grant("example.pe", "second_db", "shared_user"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.Delete("example.pe", "first_db", "shared_user", true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if err := connect("shared_user", "shared-pw", "second_db"); err != nil {
+		t.Fatalf("deleting one database cut off another the user still holds: %v", err)
+	}
+}
+
+// And when nothing else is reachable through it, the user goes with it: an
+// account left behind is a credential nobody is watching.
+func TestMariaDBDeletingTheLastDatabaseTakesItsUser(t *testing.T) {
+	manager, store := realManager(t)
+	store.Save(site.State{SiteID: "example.pe", Domain: "example.pe"})
+
+	if _, err := manager.Create("example.pe", "only_db", "only_user", "only-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Delete("example.pe", "only_db", "only_user", true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := connect("only_user", "only-pw", "mysql"); err == nil {
+		t.Fatal("the user outlived the only database it held")
+	}
+}
+
+// One customer's user must not be usable against another customer's database,
+// which on a shared host is the whole of the isolation between them.
+func TestMariaDBGrantsCannotCrossSites(t *testing.T) {
+	manager, store := realManager(t)
+	store.Save(site.State{SiteID: "alpha.pe", Domain: "alpha.pe"})
+	store.Save(site.State{SiteID: "beta.pe", Domain: "beta.pe"})
+
+	if _, err := manager.Create("alpha.pe", "alpha_db", "alpha_user", "alpha-pw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateUser("beta.pe", "beta_reader", "beta-pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.Grant("alpha.pe", "alpha_db", "beta_reader"); err == nil {
+		t.Fatal("another site's user was granted on this site's database")
+	}
+	if _, err := manager.Grant("beta.pe", "alpha_db", "beta_reader"); err == nil {
+		t.Fatal("a database from another site was granted")
+	}
+}

@@ -30,6 +30,14 @@ const SFTPRevoke = "sftp.revoke"
 const DatabaseCreate = "database.create"
 const DatabaseRotatePassword = "database.rotate-password"
 const DatabaseDelete = "database.delete"
+
+// A database user exists apart from any one database: a hosting account has the
+// user its application connects as and the extra ones a customer makes for a
+// second application or a read-only tool.
+const DatabaseUserCreate = "database.user.create"
+const DatabaseUserDelete = "database.user.delete"
+const DatabaseGrant = "database.grant"
+const DatabaseRevoke = "database.revoke"
 const SiteFilesList = "site.files.list"
 const SiteFilesMkdir = "site.files.mkdir"
 const SiteFilesWrite = "site.files.write"
