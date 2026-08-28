@@ -173,7 +173,22 @@ func dropRoleSQL(role string) string {
 }
 
 func identifier(value string) string { return `"` + value + `"` }
-func literal(value string) string    { return `'` + strings.ReplaceAll(value, `'`, `''`) + `'` }
+
+// literal quotes a value for the engine in use.
+//
+// Doubling the quote is the whole of it for PostgreSQL, where
+// standard_conforming_strings leaves a backslash meaning a backslash. MySQL and
+// MariaDB read one as an escape unless NO_BACKSLASH_ESCAPES is set, so there
+// `\'` is a quote and the doubling meant to neutralise it closes the literal a
+// character early — with everything after it read as statement rather than
+// password.
+func literal(value string) string {
+	if mariadb() {
+		value = strings.ReplaceAll(value, `\`, `\\`)
+	}
+
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+}
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

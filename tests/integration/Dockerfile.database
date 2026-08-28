@@ -1,0 +1,16 @@
+FROM golang:1.25-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends mariadb-server \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+# The server is started here rather than by the test so the test exercises the
+# same `mysql -uroot` socket path the agent uses on a node.
+CMD ["sh", "-c", "\
+    mariadbd-safe --user=mysql >/var/log/mariadb.log 2>&1 & \
+    for _ in $(seq 1 60); do mysql -uroot -e 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done; \
+    mysql -uroot -e 'SELECT VERSION()' || { tail -30 /var/log/mariadb.log; exit 1; }; \
+    go test -tags=integration -timeout 180s -run TestMariaDB -v ./internal/database"]

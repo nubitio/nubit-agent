@@ -182,3 +182,10 @@ jobs:
       # silently, and only in production.
       - name: Serve a request through the socket and document root
         run: sh scripts/test-site-serving-debian12.sh
+
+      # The MariaDB statements were only ever compared as strings. This runs
+      # them against a server and opens the database with the credentials they
+      # created, which is the half that decides whether a customer's database
+      # works at all.
+      - name: Provision databases against a real MariaDB
+        run: sh scripts/test-database-mariadb.sh

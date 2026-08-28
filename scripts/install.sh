@@ -5,11 +5,15 @@
 #
 # Installs the released binary, the systemd unit, and the state directories.
 # Pass --profile web to also install the Debian 12 or Ubuntu 26.04 web profile
-# packages (Caddy, PHP-FPM, PostgreSQL, OpenSSH). Re-running upgrades in place.
+# packages (Caddy, PHP-FPM, a database server, OpenSSH). Re-running upgrades in
+# place.
 set -eu
 
 dry_run=false
 profile=
+# MariaDB is what shared PHP hosting means in practice, and what the sites this
+# node will run expect to find.
+database_engine=${NUBIT_DATABASE_ENGINE:-mariadb}
 agent_token_from_cli=false
 mail_relay=${NUBIT_MAIL_RELAY:-}
 version=latest
@@ -29,6 +33,8 @@ Usage: install.sh [options]
   --version <tag>        Install a specific release (default: latest)
   --profile web          Also install the Debian 12 or Ubuntu 26.04 web profile packages
   --profile web,mail     Also install Stalwart for shared-hosting mailboxes
+  --database <engine>    Database server the web profile installs and the agent
+                         provisions on: mariadb (default) or postgres
   --mail-relay <host>    Smart host outbound mail is relayed through
   --control-url <url>    Nubit Control base URL to write into the environment file
   --agent-token <t>      Agent token to write as NUBIT_AGENT_TOKEN for Control polling.
@@ -141,6 +147,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
     --profile) shift; profile=${1:-} ;;
+    --database) shift; database_engine=${1:-} ;;
     --mail-relay) shift; mail_relay=${1:-} ;;
     --version) shift; version=${1:-} ;;
     --control-url) shift; control_url=${1:-} ;;
@@ -155,6 +162,11 @@ done
 if "$agent_token_from_cli"; then
   printf 'warning: --agent-token can expose the token through process argv or shell history; prefer NUBIT_AGENT_TOKEN in the environment. The token will not be printed.\n' >&2
 fi
+
+case "$database_engine" in
+  mariadb | postgres) ;;
+  *) fail 'Supported database engines are "mariadb" and "postgres".' ;;
+esac
 
 [ "$(id -u)" = 0 ] || fail 'Run as root.'
 command -v curl >/dev/null 2>&1 || fail 'curl is required.'
@@ -227,6 +239,18 @@ else
   printf 'Checksum verified.\n'
 fi
 
+# The agent reads the engine from its environment and speaks a different
+# dialect for each, so an installation that put MariaDB on the host and left
+# this saying postgres would fail every database command on a node that looks
+# correctly installed.
+if [ -f "$env_file" ]; then
+  if "$dry_run"; then
+    printf '+ set NUBIT_DATABASE_ENGINE=%s in %s\n' "$database_engine" "$env_file"
+  else
+    update_env_assignment "$env_file" NUBIT_DATABASE_ENGINE "$database_engine"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Optional web profile. Debian 12 and Ubuntu 26.04 use packages.sury.org,
 # which exposes versioned PHP-FPM pools under /etc/php/<version>/fpm/pool.d,
@@ -235,6 +259,11 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ -n "$profile" ]; then
+  if [ "$database_engine" = mariadb ]; then
+    database_package=mariadb-server
+  else
+    database_package=postgresql
+  fi
   case "$profile" in
     web | web,mail) ;;
     *) fail 'Supported profiles are "web" and "web,mail".' ;;
@@ -246,13 +275,13 @@ if [ -n "$profile" ]; then
     debian:12)
       [ "$arch" = amd64 ] || fail 'Debian 12 web profile is validated for linux/amd64 only.'
       run apt-get update
-      run apt-get install -y ca-certificates curl caddy lsb-release postgresql openssh-server
+      run apt-get install -y ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository bookworm
       ;;
     ubuntu:26.04)
       [ "$arch" = amd64 ] || fail 'Ubuntu 26.04 web profile is validated for linux/amd64 only.'
       run apt-get update
-      run apt-get install -y ca-certificates curl caddy lsb-release postgresql openssh-server
+      run apt-get install -y ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository resolute
       ;;
     *)
@@ -361,6 +390,8 @@ if [ ! -f "$env_file" ]; then
       printf '#NUBIT_MAIL_API_USER=nubit-agent\n'
       printf '#NUBIT_MAIL_API_SECRET=\n'
       printf '#NUBIT_MAIL_BASE_URL=https://127.0.0.1\n'
+      printf '# Database server this node provisions site databases on.\n'
+      printf 'NUBIT_DATABASE_ENGINE=%s\n' "$database_engine"
       printf '# Set to off to pin this server to the installed version.\n'
       printf '#NUBIT_AGENT_UPDATE=off\n'
     } > "$env_file"
