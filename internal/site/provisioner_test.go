@@ -37,8 +37,14 @@ func TestProvisionerCreatesIsolatedUserAndDocumentRoot(t *testing.T) {
 	if result.SiteID != "example.com" || result.DocumentRoot != filepath.Join(base, "sites", "example.com", "public") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if len(runner.calls) != 8 {
+	if len(runner.calls) != 9 {
 		t.Fatalf("got %d commands: %#v", len(runner.calls), runner.calls)
+	}
+	// The web server has to be able to read what it serves. A document root
+	// group-owned by the tenant answers every static request with a 403, and
+	// nothing below this layer would notice.
+	if !containsCall(runner.calls, []string{"install", "-d", "-o", "site-example", "-g", WebServerUser, "-m", "0750", result.DocumentRoot}) {
+		t.Fatalf("the document root is not readable by the web server: %#v", runner.calls)
 	}
 	if _, err := os.Stat(result.DocumentRoot); err != nil {
 		t.Fatal(err)
@@ -327,4 +333,25 @@ func TestDeleteRequiresSuspensionAndArchivesSite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(deleted.RecoveryDir, "site", "public")); err != nil {
 		t.Fatalf("archived site missing: %v", err)
 	}
+}
+
+func containsCall(calls [][]string, want []string) bool {
+	for _, call := range calls {
+		if len(call) != len(want) {
+			continue
+		}
+		match := true
+		for i := range call {
+			if call[i] != want[i] {
+				match = false
+
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+
+	return false
 }

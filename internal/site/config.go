@@ -24,8 +24,57 @@ func CaddyConfig(domain, root, socket string) string {
 	return fmt.Sprintf("%s {\n\troot * %s\n\tphp_fastcgi unix/%s\n\tfile_server\n\tlog {\n\t\toutput file %s\n\t}\n}\n", strings.Join(hosts, ", "), root, socket, logFile)
 }
 
+// WebServerUser is the account Caddy runs as under its Debian package.
+//
+// It is the only account besides the tenant's own that is given a way into a
+// site: it owns the pool socket by group so it can connect, and it is the group
+// on the document root so it can read what it serves. Everything else on the
+// host, every other tenant included, is left with no access at all.
+const WebServerUser = "caddy"
+
+// poolTemplate is the FPM pool for one site.
+//
+// The socket is owned by the tenant and group-owned by the web server at 0660,
+// which is what lets Caddy connect while leaving every other tenant out. Its
+// mode is written rather than left to the default, because that default is what
+// the two of them can reach each other through.
+//
+// Memory is bounded here and nowhere else. All the pools of one PHP version are
+// children of a single systemd unit, so a cgroup cannot be aimed at an
+// individual site; pm.max_children multiplied by memory_limit is the real
+// ceiling, and at 5 x 128M it is 640 MiB per site.
+const poolTemplate = `[%[1]s]
+user = %[1]s
+group = %[1]s
+listen = /run/php/%[2]s
+listen.owner = %[1]s
+listen.group = %[3]s
+listen.mode = 0660
+
+pm = ondemand
+pm.max_children = 5
+; The worker dies with its opcache, so a short timeout makes a low-traffic site
+; recompile on nearly every visit.
+pm.process_idle_timeout = 60s
+; Without this a hung request holds its worker forever, and five of them take
+; the site down for good.
+request_terminate_timeout = 60s
+
+chdir = %[4]s
+php_admin_value[memory_limit] = 128M
+; The tenant's unix user stops it writing outside the site. This stops it
+; reading outside, which unix permissions alone would still allow.
+php_admin_value[open_basedir] = %[4]s/:/usr/share/php/
+; Kept inside the site rather than in a directory shared with every other
+; tenant on the host.
+php_admin_value[upload_tmp_dir] = %[4]s/tmp
+php_admin_value[session.save_path] = %[4]s/tmp
+php_admin_value[error_log] = /var/log/nubit/%[1]s.php.log
+php_admin_flag[log_errors] = on
+`
+
 func PHPFPMConfig(user, root, socket string) string {
-	return fmt.Sprintf("[%s]\nuser = %s\ngroup = %s\nlisten = /run/php/%s\nlisten.owner = %s\nlisten.group = %s\npm = ondemand\npm.max_children = 5\npm.process_idle_timeout = 10s\nchdir = %s\nphp_admin_value[error_log] = /var/log/nubit/%s.php.log\nphp_admin_flag[log_errors] = on\n", user, user, user, socket, user, user, root, user)
+	return fmt.Sprintf(poolTemplate, user, socket, WebServerUser, root)
 }
 
 func DefaultIndexHTML(domain string) string {

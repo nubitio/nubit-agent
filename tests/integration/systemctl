@@ -1,7 +1,49 @@
 #!/bin/sh
 set -eu
 
-# Disposable containers do not boot systemd. Configuration validation is still
-# performed by the real Caddy and PHP-FPM binaries before this reload boundary.
-[ "$1" = reload ]
-[ "$2" = caddy ] || [ "$2" = php8.3-fpm ] || [ "$2" = php8.4-fpm ] || [ "$2" = php8.5-fpm ]
+# Disposable containers do not boot systemd, so this stands in for it.
+#
+# By default it only asserts that the agent asked to reload a unit it is allowed
+# to touch; the configuration itself was already validated by the real Caddy and
+# PHP-FPM binaries before this boundary.
+#
+# With NUBIT_TEST_SUPERVISE=1 it actually starts and reloads those daemons. That
+# is what lets a test send a request through the socket the agent wrote, which
+# is the only way the ownership and mode of that socket are ever exercised.
+
+action=$1
+unit=$2
+
+[ "$action" = reload ]
+case "$unit" in
+  caddy | php8.3-fpm | php8.4-fpm | php8.5-fpm) ;;
+  *) exit 1 ;;
+esac
+
+[ "${NUBIT_TEST_SUPERVISE:-0}" = 1 ] || exit 0
+
+if [ "$unit" = caddy ]; then
+  # Caddy runs as its own unprivileged user on a real host, and that is the
+  # whole point here: as root it could open any socket and read any document
+  # root, so every permission bug would pass unnoticed.
+  # Output is redirected because the started daemon inherits stdout and never
+  # closes it, which leaves whoever invoked this stand-in waiting on a pipe that
+  # will not reach EOF until the container dies.
+  as_caddy() {
+    HOME=/var/lib/caddy setpriv --reuid=caddy --regid=caddy --clear-groups "$@" \
+      </dev/null >>/var/log/nubit-test-caddy.log 2>&1
+  }
+  if as_caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+    exit 0
+  fi
+  as_caddy caddy start --config /etc/caddy/Caddyfile --adapter caddyfile
+  exit 0
+fi
+
+version=${unit#php}
+version=${version%-fpm}
+pidfile=/run/php/php$version-fpm.pid
+if [ -f "$pidfile" ] && kill -USR2 "$(cat "$pidfile")" 2>/dev/null; then
+  exit 0
+fi
+"php-fpm$version" --daemonize </dev/null >>/var/log/nubit-test-fpm.log 2>&1

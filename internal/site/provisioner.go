@@ -121,14 +121,22 @@ func (p Provisioner) Create(domain, systemUser, phpVersion string) (result Creat
 		return result, err
 	}
 	siteDirectoryCreated = true
-	if err = p.run("install", "-d", "-o", systemUser, "-g", systemUser, "-m", "0750", documentRoot); err != nil {
+	// Owned by the tenant, group-owned by the web server, closed to everyone
+	// else. Caddy has to read what it serves, and 0750 without the group would
+	// answer every request for a static file with a 403.
+	if err = p.run("install", "-d", "-o", systemUser, "-g", WebServerUser, "-m", "0750", documentRoot); err != nil {
+		return result, err
+	}
+	// Sessions and uploads land here instead of in a directory shared with every
+	// other tenant. The web server never reads it, so it stays closed to the group.
+	if err = p.run("install", "-d", "-o", systemUser, "-g", systemUser, "-m", "0700", filepath.Join(siteRoot, "tmp")); err != nil {
 		return result, err
 	}
 	index := filepath.Join(documentRoot, "index.html")
 	if writeErr := os.WriteFile(index, []byte(DefaultIndexHTML(domain)), 0o644); writeErr != nil {
 		return result, writeErr
 	}
-	if err = p.run("chown", systemUser+":"+systemUser, index); err != nil {
+	if err = p.run("chown", systemUser+":"+WebServerUser, index); err != nil {
 		return result, err
 	}
 	if err = p.run("caddy", "validate", "--adapter", "caddyfile", "--config", caddyStage); err != nil {

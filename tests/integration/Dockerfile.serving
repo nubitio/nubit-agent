@@ -1,0 +1,21 @@
+FROM golang:1.25-bookworm
+
+COPY tests/integration/systemctl /usr/local/bin/systemctl
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates caddy curl lsb-release libcap2-bin util-linux \
+    && curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
+    && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
+    && echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ bookworm main" > /etc/apt/sources.list.d/php.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends php8.4-fpm \
+    # Caddy binds :80 as an unprivileged user on a real host through this
+    # capability, which the Debian unit grants. Granted here for the same reason.
+    && setcap cap_net_bind_service=+ep /usr/bin/caddy \
+    && chmod 0755 /usr/local/bin/systemctl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+CMD ["go", "test", "-tags=integration", "-timeout", "180s", "-run", "TestASiteActuallyServes", "-v", "./internal/site"]

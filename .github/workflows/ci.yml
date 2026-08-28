@@ -163,3 +163,22 @@ jobs:
             exit 1
           fi
           echo "correctly refused"
+
+  provisioning:
+    name: Site provisioning on Debian 12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Creates real users, pools and Caddy sites in a disposable container, so
+      # what runs here is the same code path a node runs.
+      - name: Create sites across every supported PHP version
+        run: sh scripts/test-site-create-debian12.sh
+
+      # And then sends a request through them. Everything above this stops at
+      # `caddy validate` and `php-fpm --test`, which prove the configuration
+      # parses and nothing about whether the web server can open the socket or
+      # read the document root — the two things a wrong owner or mode breaks
+      # silently, and only in production.
+      - name: Serve a request through the socket and document root
+        run: sh scripts/test-site-serving-debian12.sh
