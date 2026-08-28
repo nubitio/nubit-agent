@@ -53,7 +53,12 @@ curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/in
 That installs the released binary at `/usr/local/bin/nubit-agent`, creates
 `/etc/nubit-agent` and `/var/lib/nubit-agent` with strict permissions, and
 enables the `nubit-agent` systemd unit. Add `--profile web` to also install the
-web-profile packages for the target distribution. For the operational MVP, issue
+web-profile packages for the target distribution, and `--database postgres` if
+the node should carry PostgreSQL instead of the MariaDB the web profile installs
+by default. The choice is written to `NUBIT_DATABASE_ENGINE` in the agent's
+environment, which is where the agent reads which dialect to speak; a host
+carrying one engine while the agent is told another fails every database command
+while looking correctly installed. For the operational MVP, issue
 an opaque server token in Nubit Control with `POST /api/servers/{id}/rotate-token`
 and configure it as `NUBIT_AGENT_TOKEN`; the Agent sends it on every poll as
 `X-Agent-Token`.
@@ -159,7 +164,8 @@ operational MVP capability.
 ## Debian 12 and Ubuntu 26.04 amd64 web-profile support
 
 The web-profile is supported on Debian 12 amd64 and Ubuntu 26.04 amd64, with Caddy,
-PHP-FPM, PostgreSQL, and native SFTP through OpenSSH. Ubuntu 26.04 amd64 has an
+PHP-FPM, MariaDB, and native SFTP through OpenSSH. `--database postgres` installs
+PostgreSQL instead. Ubuntu 26.04 amd64 has an
 operator-external real-VM systemd validation confirmation and no local artifact
 in this repository. arm64 is outside the MVP and is rejected by the installer
 because it is not supported. Review the installation actions before running them:
@@ -189,9 +195,9 @@ root and configuration copies are retained under `/srv/nubit/sites/.trash` and
 the returned `recoveryDir` identifies the recovery location.
 
 SFTP access uses public keys, OpenSSH `internal-sftp`, a forced initial document
-root, disabled forwarding, and no password authentication. PostgreSQL database
-commands use fixed operations and send passwords through stdin; secrets are not
-returned in command results. Site deletion is blocked until SFTP access and
+root, disabled forwarding, and no password authentication. Database commands use
+fixed operations and send passwords through stdin; secrets are not returned in
+command results. Site deletion is blocked until SFTP access and
 owned databases have been removed.
 
 FTP is not installed by the web profile. The Agent has Stalwart/mail capability,

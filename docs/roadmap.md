@@ -9,7 +9,8 @@ Control decides and audits; the Agent applies a closed, versioned command set.
 ## Supported baseline
 
 Debian 12 amd64 and Ubuntu 26.04 amd64 are the supported platforms for the current MVP
-web profile: Caddy, PHP-FPM, PostgreSQL, OpenSSH/SFTP, and ACME TLS. Ubuntu
+web profile: Caddy, PHP-FPM, MariaDB (PostgreSQL on request), OpenSSH/SFTP,
+and ACME TLS. Ubuntu
 26.04 amd64 support includes operator-external evidence: the operator ran
 `scripts/test-installer-ubuntu2604-systemd.sh --version <tag>` on a real Ubuntu
 26.04 amd64 VM and confirmed OK; no local artifact is present in this
@@ -82,7 +83,7 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
   command in flight.
 - Site suspension, resumption, alias domains, and recoverable confirmed deletion.
 - Public-key SFTP lifecycle with restricted OpenSSH configuration.
-- PostgreSQL create, password rotation, and confirmed delete operations scoped
+- MariaDB and PostgreSQL create, password rotation, and confirmed delete scoped
   to persistent site ownership.
 - Site file manager commands: `site.files.list`, `site.files.mkdir`,
   `site.files.write`, `site.files.read`, `site.files.delete`,
