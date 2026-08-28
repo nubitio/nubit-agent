@@ -27,15 +27,17 @@ NUBIT_AGENT_REPOSITORY=${NUBIT_AGENT_REPOSITORY:-nubitio/nubit-agent} \
 systemctl is-enabled nubit-agent
 systemctl is-active --quiet nubit-agent
 systemctl is-active --quiet caddy
-systemctl is-active --quiet postgresql
+systemctl is-active --quiet mariadb
 
 for service in php8.3-fpm php8.4-fpm php8.5-fpm ssh; do
   systemctl is-active --quiet "$service"
 done
 
-for binary in caddy psql sshd php-fpm8.3 php-fpm8.4 php-fpm8.5; do
+for binary in caddy mysql sshd php-fpm8.3 php-fpm8.4 php-fpm8.5; do
   command -v "$binary" >/dev/null
 done
+
+grep -Fxq 'NUBIT_DATABASE_ENGINE=mariadb' /etc/nubit-agent/agent.env
 
 test -x /usr/local/bin/nubit-agent
 test -d /etc/nubit-agent

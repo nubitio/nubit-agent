@@ -25,9 +25,14 @@ NUBIT_AGENT_REPOSITORY=integration/nubit-agent \
 
 test -x /usr/local/bin/nubit-agent
 /usr/local/bin/nubit-agent --version | grep -qx dev
-for binary in caddy psql sshd php-fpm8.3 php-fpm8.4 php-fpm8.5; do
+# MariaDB is the default engine, so mysql is what a web profile leaves behind.
+for binary in caddy mysql sshd php-fpm8.3 php-fpm8.4 php-fpm8.5; do
   command -v "$binary" >/dev/null
 done
+# The agent speaks a different dialect per engine and reads which from here, so
+# a host carrying MariaDB while this says otherwise fails every database command
+# on a node that looks correctly installed.
+grep -Fxq 'NUBIT_DATABASE_ENGINE=mariadb' /etc/nubit-agent/agent.env
 
 test -d /etc/nubit-agent
 grep -Fxq 'NUBIT_CONTROL_URL=https://control.example.test' /etc/nubit-agent/agent.env
