@@ -275,13 +275,13 @@ if [ -n "$profile" ]; then
     debian:12)
       [ "$arch" = amd64 ] || fail 'Debian 12 web profile is validated for linux/amd64 only.'
       run apt-get update
-      run apt-get install -y ca-certificates curl caddy lsb-release "$database_package" openssh-server
+      run apt-get install -y acl ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository bookworm
       ;;
     ubuntu:26.04)
       [ "$arch" = amd64 ] || fail 'Ubuntu 26.04 web profile is validated for linux/amd64 only.'
       run apt-get update
-      run apt-get install -y ca-certificates curl caddy lsb-release "$database_package" openssh-server
+      run apt-get install -y acl ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository resolute
       ;;
     *)

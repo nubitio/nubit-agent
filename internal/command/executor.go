@@ -88,6 +88,9 @@ type SFTPProvisioner interface {
 	Create(siteID, publicKey string) (access.Result, error)
 	UpdateKey(siteID, publicKey string) (access.Result, error)
 	Revoke(siteID string) (access.Result, error)
+	CreateFTPUser(siteID, label, publicKey, directory string) (access.FTPResult, error)
+	UpdateFTPKey(siteID, label, publicKey string) (access.FTPResult, error)
+	DeleteFTPUser(siteID, label string, confirmed bool) (access.FTPResult, error)
 }
 
 // TLSInspector reports the certificate Caddy holds for a site. It never reads
@@ -352,6 +355,34 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, accessErr
 		}
 		output, err = json.Marshal(accessResult)
+	case SFTPUserCreate, SFTPUserUpdateKey, SFTPUserDelete:
+		request, parseErr := parseSFTPUser(
+			command.Payload,
+			command.Type != SFTPUserDelete,
+			command.Type == SFTPUserDelete,
+		)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.sftp == nil {
+			return Result{}, errors.New("SFTP provisioner is not configured")
+		}
+		var ftpResult access.FTPResult
+		var ftpErr error
+		switch command.Type {
+		case SFTPUserCreate:
+			ftpResult, ftpErr = executor.sftp.CreateFTPUser(
+				request.SiteID, request.Label, request.PublicKey, request.Directory,
+			)
+		case SFTPUserUpdateKey:
+			ftpResult, ftpErr = executor.sftp.UpdateFTPKey(request.SiteID, request.Label, request.PublicKey)
+		case SFTPUserDelete:
+			ftpResult, ftpErr = executor.sftp.DeleteFTPUser(request.SiteID, request.Label, request.Confirm)
+		}
+		if ftpErr != nil {
+			return Result{}, ftpErr
+		}
+		output, err = json.Marshal(ftpResult)
 	case DatabaseCreate, DatabaseRotatePassword, DatabaseDelete:
 		request, parseErr := parseDatabase(command.Payload, command.Type != DatabaseDelete, command.Type == DatabaseDelete)
 		if parseErr != nil {

@@ -1,0 +1,31 @@
+FROM golang:1.25-bookworm
+
+COPY tests/integration/systemctl /usr/local/bin/systemctl
+
+# The site is provisioned by the real provisioner so the permissions under test
+# are the ones a node actually ends up with, which needs the FPM binary it
+# validates its pool against.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends acl openssh-server openssh-client caddy ca-certificates curl lsb-release util-linux \
+    && curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
+    && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
+    && echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ bookworm main" > /etc/apt/sources.list.d/php.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends php8.4-fpm \
+    && chmod 0755 /usr/local/bin/systemctl \
+    && rm -rf /var/lib/apt/lists/*
+
+# sshd validates and would reload against the host's own configuration, so the
+# drop-in directory the manager writes into is the one sshd actually reads. The
+# Include goes first because OpenSSH applies it where it appears, and anything
+# after a Match block would land inside that block.
+RUN mkdir -p /run/sshd /etc/ssh/nubit.d \
+    && printf 'Include /etc/ssh/nubit.d/*.conf\n' | cat - /etc/ssh/sshd_config > /tmp/sshd_config \
+    && mv /tmp/sshd_config /etc/ssh/sshd_config \
+    && ssh-keygen -A \
+    && sshd -t
+
+WORKDIR /app
+COPY . .
+
+CMD ["go", "test", "-tags=integration", "-timeout", "180s", "-v", "./internal/access"]

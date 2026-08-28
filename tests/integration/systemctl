@@ -16,9 +16,13 @@ unit=$2
 
 [ "$action" = reload ]
 case "$unit" in
-  caddy | php8.3-fpm | php8.4-fpm | php8.5-fpm) ;;
+  caddy | php8.3-fpm | php8.4-fpm | php8.5-fpm | ssh) ;;
   *) exit 1 ;;
 esac
+
+# sshd is validated by the real binary before this point, so a reload here has
+# nothing left to prove and no daemon is running to receive it.
+[ "$unit" = ssh ] && exit 0
 
 [ "${NUBIT_TEST_SUPERVISE:-0}" = 1 ] || exit 0
 

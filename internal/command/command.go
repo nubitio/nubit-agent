@@ -27,6 +27,12 @@ const SystemReconcile = "system.reconcile"
 const SFTPCreate = "sftp.create"
 const SFTPUpdateKey = "sftp.update-key"
 const SFTPRevoke = "sftp.revoke"
+
+// Logins beyond the site's own: the accounts a customer hands to a developer or
+// an agency, each with its own key and its own directory inside the site.
+const SFTPUserCreate = "sftp.user.create"
+const SFTPUserUpdateKey = "sftp.user.update-key"
+const SFTPUserDelete = "sftp.user.delete"
 const DatabaseCreate = "database.create"
 const DatabaseRotatePassword = "database.rotate-password"
 const DatabaseDelete = "database.delete"

@@ -28,6 +28,10 @@ type State struct {
 	// another database.
 	DatabaseGrants map[string][]string `json:"databaseGrants,omitempty"`
 	SFTPEnabled    bool                `json:"sftpEnabled"`
+	// Additional SFTP logins beyond the site's own, by the label the customer
+	// gave each one, with the directory each is scoped to.
+	FTPUsers       []string          `json:"ftpUsers,omitempty"`
+	FTPDirectories map[string]string `json:"ftpDirectories,omitempty"`
 	// Kept with the site so every path that regenerates the pool — a version
 	// change, a drift check — rebuilds it with the limits the site was sold,
 	// instead of quietly resetting it to the default tier.

@@ -189,3 +189,9 @@ jobs:
       # works at all.
       - name: Provision databases against a real MariaDB
         run: sh scripts/test-database-mariadb.sh
+
+      # Extra SFTP logins are unix accounts reaching into a directory owned by
+      # someone else through a POSIX ACL. Whether that grants anything is
+      # decided by the filesystem and by sshd, so both are real here.
+      - name: Give a site extra SFTP logins
+        run: sh scripts/test-ftp-users-debian12.sh
