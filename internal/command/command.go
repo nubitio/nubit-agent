@@ -38,6 +38,13 @@ const SiteCronReplace = "site.cron.replace"
 const SiteBackupList = "site.backup.list"
 const SiteBackupCreate = "site.backup.create"
 const SiteBackupRestore = "site.backup.restore"
+const MailDomainCreate = "mail.domain.create"
+const MailDomainDelete = "mail.domain.delete"
+const MailMailboxCreate = "mail.mailbox.create"
+const MailMailboxSetPassword = "mail.mailbox.set-password"
+const MailMailboxSetQuota = "mail.mailbox.set-quota"
+const MailMailboxDelete = "mail.mailbox.delete"
+const MailInventory = "mail.inventory"
 
 type Command struct {
 	ID             string          `json:"id"`

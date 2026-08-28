@@ -13,6 +13,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/database"
 	"github.com/nubitio/nubit-agent/internal/files"
 	"github.com/nubitio/nubit-agent/internal/logs"
+	"github.com/nubitio/nubit-agent/internal/mail"
 	"github.com/nubitio/nubit-agent/internal/site"
 )
 
@@ -63,6 +64,7 @@ type Executor struct {
 	cron    CronProvisioner
 	logs    LogProvisioner
 	backups BackupProvisioner
+	mail    MailProvisioner
 }
 
 type SiteProvisioner interface {
@@ -83,6 +85,17 @@ type SFTPProvisioner interface {
 	Create(siteID, publicKey string) (access.Result, error)
 	UpdateKey(siteID, publicKey string) (access.Result, error)
 	Revoke(siteID string) (access.Result, error)
+}
+
+// MailProvisioner administers the mail server that runs beside the web stack.
+type MailProvisioner interface {
+	CreateDomain(domain string) (mail.DomainResult, error)
+	DeleteDomain(domain string, confirmed bool) (mail.DomainResult, error)
+	CreateMailbox(address, password string, quotaBytes int64) (mail.MailboxResult, error)
+	SetPassword(address, password string) error
+	SetQuota(address string, quotaBytes int64) (mail.MailboxResult, error)
+	DeleteMailbox(address string, confirmed bool) (mail.MailboxResult, error)
+	Inventory() ([]mail.MailboxResult, error)
 }
 
 type DatabaseProvisioner interface {
@@ -140,6 +153,9 @@ func NewExecutor(store Store, services ...any) *Executor {
 		}
 		if backupManager, ok := service.(BackupProvisioner); ok {
 			executor.backups = backupManager
+		}
+		if mailManager, ok := service.(MailProvisioner); ok {
+			executor.mail = mailManager
 		}
 	}
 	return executor
@@ -428,6 +444,12 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 			return Result{}, err
 		}
 		output, err = json.Marshal(map[string]any{"ok": true})
+	case MailDomainCreate, MailDomainDelete, MailMailboxCreate, MailMailboxSetPassword,
+		MailMailboxSetQuota, MailMailboxDelete, MailInventory:
+		if executor.mail == nil {
+			return Result{}, errors.New("mail provisioner is not configured")
+		}
+		output, err = executor.executeMail(command.Type, command.Payload)
 	default:
 		return Result{}, errors.New("unsupported command type")
 	}
@@ -510,4 +532,63 @@ func (executor *Executor) executeFiles(commandType string, request SiteFilesPayl
 	default:
 		return nil, errors.New("unsupported command type")
 	}
+}
+
+func (executor *Executor) executeMail(commandType string, payload json.RawMessage) ([]byte, error) {
+	// The inventory takes no arguments: it answers what the server actually
+	// holds, which is what a reconcile compares against.
+	if commandType == MailInventory {
+		inventory, err := executor.mail.Inventory()
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(inventory)
+	}
+
+	request, err := parseMail(payload, commandType)
+	if err != nil {
+		return nil, err
+	}
+
+	switch commandType {
+	case MailDomainCreate:
+		created, err := executor.mail.CreateDomain(request.Domain)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(created)
+	case MailDomainDelete:
+		removed, err := executor.mail.DeleteDomain(request.Domain, request.Confirm)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(removed)
+	case MailMailboxCreate:
+		mailbox, err := executor.mail.CreateMailbox(request.Address, request.Password, request.QuotaBytes)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(mailbox)
+	case MailMailboxSetPassword:
+		if err := executor.mail.SetPassword(request.Address, request.Password); err != nil {
+			return nil, err
+		}
+		// Only the address comes back. Echoing the password would put it in
+		// the persisted command result.
+		return json.Marshal(map[string]any{"address": request.Address, "status": "active"})
+	case MailMailboxSetQuota:
+		mailbox, err := executor.mail.SetQuota(request.Address, request.QuotaBytes)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(mailbox)
+	case MailMailboxDelete:
+		mailbox, err := executor.mail.DeleteMailbox(request.Address, request.Confirm)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(mailbox)
+	}
+
+	return nil, errors.New("unsupported mail command")
 }

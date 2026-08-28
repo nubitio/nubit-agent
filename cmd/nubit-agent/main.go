@@ -23,6 +23,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/files"
 	"github.com/nubitio/nubit-agent/internal/inventory"
 	"github.com/nubitio/nubit-agent/internal/logs"
+	"github.com/nubitio/nubit-agent/internal/mail"
 	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
 	"github.com/nubitio/nubit-agent/internal/version"
@@ -66,7 +67,11 @@ func main() {
 	cronManager := cron.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "cron")}
 	logManager := logs.Manager{Sites: siteStore}
 	backupManager := backup.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "backups")}
-	executor := command.NewExecutor(store, provisioner, sftp, databases, fileManager, cronManager, logManager, backupManager)
+	services := []any{provisioner, sftp, databases, fileManager, cronManager, logManager, backupManager}
+	if mailManager, ok := mailProvisioner(); ok {
+		services = append(services, mailManager)
+	}
+	executor := command.NewExecutor(store, services...)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -251,4 +256,33 @@ func publishInventory(ctx context.Context, client *controlplane.Client, provider
 			publish()
 		}
 	}
+}
+
+// mailProvisioner wires the Stalwart administration client when this node runs
+// mail. A web-only node leaves the credentials unset, and the executor then
+// refuses mail commands rather than pretending to have carried them out.
+func mailProvisioner() (mail.Manager, bool) {
+	secret := os.Getenv("NUBIT_MAIL_API_SECRET")
+	if secret == "" {
+		return mail.Manager{}, false
+	}
+
+	baseURL := os.Getenv("NUBIT_MAIL_BASE_URL")
+	if baseURL == "" {
+		// The mail server runs on this host. Its certificate is issued for the
+		// public hostname, so verification is skipped for the loopback hop the
+		// traffic never leaves.
+		baseURL = "https://127.0.0.1"
+	}
+	username := os.Getenv("NUBIT_MAIL_API_USER")
+	if username == "" {
+		username = "nubit-agent"
+	}
+
+	return mail.Manager{JMAP: &mail.Client{
+		BaseURL:     baseURL,
+		Username:    username,
+		Secret:      secret,
+		InsecureTLS: strings.HasPrefix(baseURL, "https://127.0.0.1"),
+	}}, true
 }
