@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,7 +32,15 @@ import (
 	"github.com/nubitio/nubit-agent/internal/version"
 )
 
-const defaultPollInterval = 15 * time.Second
+const (
+	defaultPollInterval   = 15 * time.Second
+	defaultRenewInterval  = 12 * time.Hour
+	defaultRenewThreshold = 7 * 24 * time.Hour
+	defaultConfigDir      = "/etc/nubit-agent"
+	defaultStateDir       = "/var/lib/nubit-agent"
+	defaultListenAddr     = "127.0.0.1:9090"
+	expiringSoonWindow    = 7 * 24 * time.Hour
+)
 
 func main() {
 	// Release builds are verified by asking the binary what it is, and operators
@@ -41,14 +50,30 @@ func main() {
 		return
 	}
 
+	// The `enroll` subcommand runs an out-of-band mTLS enrollment against
+	// Nubit Control and exits. It does not start the polling loop, the HTTP
+	// health endpoint or the self-update goroutine — those are reserved for
+	// the long-running `nubit-agent` (no-args) form.
+	if len(os.Args) > 1 && os.Args[1] == "enroll" {
+		if err := runEnroll(os.Args[2:]); err != nil {
+			log.Printf("enroll: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	address := os.Getenv("NUBIT_AGENT_LISTEN_ADDR")
 	if address == "" {
-		address = "127.0.0.1:9090"
+		address = defaultListenAddr
 	}
 	stateDir := os.Getenv("NUBIT_AGENT_STATE_DIR")
 	if stateDir == "" {
-		stateDir = "/var/lib/nubit-agent"
+		stateDir = defaultStateDir
 	}
+	// Cert validation at startup: a stale or untrusted cert means the agent
+	// will be silently downgraded to token-only mode (or worse, fail to
+	// connect). Operators expect loud failure so they fix the deployment.
+	verifyStartCertificate()
 	store, err := command.NewFileStore(filepath.Join(stateDir, "commands.json"))
 	if err != nil {
 		log.Fatalf("initialize command store: %v", err)
@@ -174,7 +199,7 @@ func startPolling(
 	}
 	configDir := os.Getenv("NUBIT_AGENT_CONFIG_DIR")
 	if configDir == "" {
-		configDir = "/etc/nubit-agent"
+		configDir = defaultConfigDir
 	}
 	manager := enrollment.Manager{Directory: configDir, ControlURL: controlURL}
 	if enrollmentToken := os.Getenv("NUBIT_AGENT_ENROLLMENT_TOKEN"); enrollmentToken != "" && !manager.Enrolled() {
@@ -203,7 +228,9 @@ func startPolling(
 			log.Fatalf("nubit-agent: load mTLS identity: %v", err)
 		}
 		client = controlplane.NewMTLSClient(controlURL, tlsConfig)
-		go renewCertificate(ctx, manager, 12*time.Hour)
+		renewInterval := getDurationEnv("NUBIT_AGENT_RENEW_CHECK_INTERVAL", defaultRenewInterval)
+		renewThreshold := getDurationEnv("NUBIT_AGENT_RENEW_THRESHOLD", defaultRenewThreshold)
+		go renewCertificate(ctx, manager, renewInterval, renewThreshold)
 	} else {
 		if token == "" {
 			log.Print("nubit-agent: no certificate or NUBIT_AGENT_TOKEN configured, polling disabled")
@@ -225,9 +252,9 @@ func startPolling(
 	return client
 }
 
-func renewCertificate(ctx context.Context, manager enrollment.Manager, interval time.Duration) {
+func renewCertificate(ctx context.Context, manager enrollment.Manager, interval, threshold time.Duration) {
 	renew := func() {
-		if manager.NeedsRenewal(time.Now().UTC(), 7*24*time.Hour) {
+		if manager.NeedsRenewal(time.Now().UTC(), threshold) {
 			if err := manager.Renew(ctx); err != nil {
 				log.Printf("nubit-agent: renew mTLS certificate failed: %v", err)
 			}
@@ -297,4 +324,117 @@ func mailProvisioner() (mail.Manager, bool) {
 		Secret:      secret,
 		InsecureTLS: strings.HasPrefix(baseURL, "https://127.0.0.1"),
 	}}, true
+}
+
+// runEnroll implements the `nubit-agent enroll` subcommand. It parses the
+// --token flag, runs Manager.Enroll against the configured Control URL and
+// prints the issued certificate's expiry on success. The subcommand
+// deliberately bypasses the long-running flag validation (no HTTP server,
+// no polling loop) so operators can run enrollment interactively without
+// disturbing a running agent — systemd can restart the service after.
+func runEnroll(args []string) error {
+	flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
+	token := flags.String("token", "", "one-time enrollment token issued by Nubit Control")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *token == "" {
+		return errors.New("--token is required")
+	}
+	controlURL := os.Getenv("NUBIT_CONTROL_URL")
+	if controlURL == "" {
+		return errors.New("NUBIT_CONTROL_URL is required")
+	}
+	stateDir := os.Getenv("NUBIT_AGENT_STATE_DIR")
+	if stateDir == "" {
+		stateDir = defaultStateDir
+	}
+	configDir := os.Getenv("NUBIT_AGENT_CONFIG_DIR")
+	if configDir == "" {
+		configDir = defaultConfigDir
+	}
+	manager := enrollment.Manager{
+		Directory:      configDir,
+		StateDirectory: stateDir,
+		ControlURL:     controlURL,
+		RootCAPath:     os.Getenv("NUBIT_STEPCA_ROOT_CERT_PATH"),
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := manager.Enroll(ctx, *token); err != nil {
+		return err
+	}
+	expiry, err := manager.CertificateExpiry()
+	if err != nil {
+		return fmt.Errorf("enrollment succeeded but reading expiry failed: %w", err)
+	}
+	fmt.Printf("Enrollment successful. Cert expires at: %s\n", expiry.UTC().Format(time.RFC3339))
+	return nil
+}
+
+// verifyStartCertificate enforces the on-disk mTLS material at startup. The
+// checks are loud — they exit with a non-zero status — because silent
+// failure here means the agent runs in a degraded state (token-only or no
+// polling) that operators may not notice for days.
+func verifyStartCertificate() {
+	configDir := os.Getenv("NUBIT_AGENT_CONFIG_DIR")
+	if configDir == "" {
+		configDir = defaultConfigDir
+	}
+	certPath := getEnvPath("NUBIT_AGENT_CERT_PATH", filepath.Join(configDir, "agent-cert.pem"))
+	caChainPath := getEnvPath("NUBIT_AGENT_CA_CHAIN_PATH", filepath.Join(configDir, "ca-cert.pem"))
+	if _, err := os.Stat(certPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		log.Fatalf("nubit-agent: stat certificate %s: %v", certPath, err)
+	}
+	if _, err := os.Stat(caChainPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		log.Fatalf("nubit-agent: stat CA chain %s: %v", caChainPath, err)
+	}
+	cert, err := enrollment.Manager{Directory: configDir}.VerifyCertificate()
+	if err != nil {
+		log.Fatalf("nubit-agent: verify mTLS certificate: %v", err)
+	}
+	now := time.Now().UTC()
+	remaining := time.Until(cert.NotAfter)
+	switch {
+	case cert.NotAfter.Before(now):
+		log.Printf("nubit-agent: warning: mTLS certificate expired at %s", cert.NotAfter.UTC().Format(time.RFC3339))
+	default:
+		if remaining < expiringSoonWindow {
+			log.Printf("nubit-agent: warning: mTLS certificate expires in %s (%s); renewal is overdue", remaining.Round(time.Second), cert.NotAfter.UTC().Format(time.RFC3339))
+		}
+	}
+}
+
+// getEnvPath returns the value of the named environment variable, or the
+// supplied default when the variable is unset.
+func getEnvPath(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// getDurationEnv parses the named environment variable as a Go duration
+// string (e.g. "12h", "30m", "168h") and returns it. An unset variable
+// yields the supplied default; a malformed value kills the process — the
+// agent must not start with a polling interval that is invalid or zero.
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Fatalf("nubit-agent: invalid %s %q: %v", key, raw, err)
+	}
+	if parsed <= 0 {
+		log.Fatalf("nubit-agent: %s must be greater than zero, got %s", key, raw)
+	}
+	return parsed
 }

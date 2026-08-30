@@ -2,8 +2,10 @@
 // Control: polling for queued ProvisioningJobs and reporting results back.
 // Authenticated with a per-server bearer token in X-Agent-Token — deliberately
 // not the Authorization header, which Nubit Control's user-facing JWT
-// authenticator also inspects. This is an interim transport; docs/roadmap.md
-// tracks replacing it with agent-initiated mTLS.
+// authenticator also inspects. When mTLS material is available on disk
+// (CertFile + KeyFile), the client also presents it on every request; both
+// authenticators can be active at once while a fleet rolls out, so the token
+// header is never suppressed in dual mode.
 package controlplane
 
 import (
@@ -13,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +29,12 @@ type Client struct {
 	BaseURL    string
 	Token      string
 	HTTPClient *http.Client
+	// CertFile and KeyFile, when both set and readable, are loaded as a
+	// tls.Certificate and presented on every TLS handshake. A failure to load
+	// them is logged and the client falls back to the token-only transport —
+	// a missing or unreadable cert must not prevent the agent from running.
+	CertFile string
+	KeyFile  string
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -41,6 +50,42 @@ func NewMTLSClient(baseURL string, tlsConfig *tls.Config) *Client {
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		HTTPClient: &http.Client{Timeout: 180 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsConfig}},
 	}
+}
+
+// NewDualClient returns a client that, on top of the X-Agent-Token header,
+// also presents a client certificate loaded from certFile/keyFile. The token
+// header is still set on every request so the server can validate either
+// identity during the cutover. A failure to load the keypair is logged and
+// the returned client falls back to the token-only transport.
+func NewDualClient(baseURL, token, certFile, keyFile string) *Client {
+	client := NewClient(baseURL, token)
+	client.CertFile = certFile
+	client.KeyFile = keyFile
+	client.attachMTLSTransport()
+	return client
+}
+
+// attachMTLSTransport upgrades the client's HTTP transport with a client
+// certificate. A failure to load the keypair is logged and the transport is
+// left untouched, so callers always retain the token-only fallback.
+func (client *Client) attachMTLSTransport() {
+	if client.CertFile == "" || client.KeyFile == "" {
+		return
+	}
+	certificate, err := tls.LoadX509KeyPair(client.CertFile, client.KeyFile)
+	if err != nil {
+		log.Printf("nubit-agent: load mTLS keypair (%s, %s): %v; continuing without client certificate", client.CertFile, client.KeyFile, err)
+		return
+	}
+	transport, ok := client.HTTPClient.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		transport = &http.Transport{}
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	transport.TLSClientConfig.Certificates = []tls.Certificate{certificate}
+	client.HTTPClient.Transport = transport
 }
 
 func (client *Client) authenticate(request *http.Request) {

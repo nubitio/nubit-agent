@@ -40,7 +40,10 @@ Usage: install.sh [options]
   --agent-token <t>      Agent token to write as NUBIT_AGENT_TOKEN for Control polling.
                          Prefer NUBIT_AGENT_TOKEN=... in the environment;
                          CLI secrets can be exposed through argv or shell history.
-  --enrollment-token <t> Experimental future mTLS enrollment token; not usable with current Control
+  --enrollment-token <t> mTLS enrollment token issued by Nubit Control. Prefer
+                          --enrollment-token over manual X-Agent-Token rotation:
+                          the token is single-use and the agent keeps its own
+                          identity once enrolled.
   --dry-run              Print the actions instead of performing them
   --help                 Show this message
 USAGE
@@ -382,7 +385,10 @@ if [ ! -f "$env_file" ]; then
         printf 'NUBIT_AGENT_TOKEN=%s\n' "$agent_token"
       fi
       if [ -n "$enrollment_token" ]; then
-        printf '# Experimental future mTLS enrollment; not usable with current Nubit Control.\n'
+        # Prefer --enrollment-token over manual X-Agent-Token rotation: the
+        # token is single-use and the agent carries its own identity
+        # (mTLS) once enrollment completes, so the long-lived bearer token
+        # never has to rotate.
         printf 'NUBIT_AGENT_ENROLLMENT_TOKEN=%s\n' "$enrollment_token"
       fi
       printf '# Mail. Set the API secret to let this node administer mailboxes;\n'
