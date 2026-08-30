@@ -393,15 +393,42 @@ if [ ! -f "$env_file" ]; then
       fi
       printf '# Mail. Set the API secret to let this node administer mailboxes;\n'
       printf '# leaving it empty makes the agent refuse mail commands outright.\n'
+      printf '# (Bare-metal: you must also install + start Stalwart and complete\n'
+      printf '#  its bootstrap yourself — the Docker image does this automatically.)\n'
       printf '#NUBIT_MAIL_API_USER=nubit-agent\n'
       printf '#NUBIT_MAIL_API_SECRET=\n'
       printf '#NUBIT_MAIL_BASE_URL=https://127.0.0.1\n'
+      printf '# Off-host backups. Set the bucket + keys to enable; empty = backup\n'
+      printf '# commands are refused. Prod: Wasabi service URL for your region.\n'
+      printf '#NUBIT_BACKUP_S3_ENDPOINT=\n'
+      printf '#NUBIT_BACKUP_S3_REGION=\n'
+      printf '#NUBIT_BACKUP_S3_BUCKET=\n'
+      printf '#NUBIT_BACKUP_S3_PREFIX=\n'
+      printf '#NUBIT_BACKUP_S3_ACCESS_KEY_ID=\n'
+      printf '#NUBIT_BACKUP_S3_SECRET_ACCESS_KEY=\n'
+      printf '#NUBIT_BACKUP_S3_FORCE_PATH_STYLE=\n'
       printf '# Database server this node provisions site databases on.\n'
       printf 'NUBIT_DATABASE_ENGINE=%s\n' "$database_engine"
       printf '# Set to off to pin this server to the installed version.\n'
       printf '#NUBIT_AGENT_UPDATE=off\n'
     } > "$env_file"
     chmod 0600 "$env_file"
+  fi
+elif [ -n "$enrollment_token" ]; then
+  if "$dry_run"; then
+    printf '+ update NUBIT_AGENT_ENROLLMENT_TOKEN in %s (secret not shown)\n' "$env_file"
+    if has_active_env_assignment "$env_file" NUBIT_AGENT_TOKEN; then
+      printf '+ deactivate NUBIT_AGENT_TOKEN in %s (secret not shown)\n' "$env_file"
+    fi
+  else
+    update_env_assignment "$env_file" NUBIT_AGENT_ENROLLMENT_TOKEN "$enrollment_token"
+    printf 'Updated NUBIT_AGENT_ENROLLMENT_TOKEN in %s (secret not shown).\n' "$env_file"
+    if deactivate_env_assignment "$env_file" NUBIT_AGENT_TOKEN 'replaced by one-time mTLS enrollment token'; then
+      printf 'warning: deactivated NUBIT_AGENT_TOKEN in %s; the Agent will enroll on its next start.\n' "$env_file" >&2
+    fi
+  fi
+  if [ -n "$control_url" ]; then
+    printf 'Keeping the existing NUBIT_CONTROL_URL; edit %s by hand to change it.\n' "$env_file"
   fi
 elif [ -n "$agent_token" ]; then
   if "$dry_run"; then

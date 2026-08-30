@@ -26,6 +26,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/inventory"
 	"github.com/nubitio/nubit-agent/internal/logs"
 	"github.com/nubitio/nubit-agent/internal/mail"
+	"github.com/nubitio/nubit-agent/internal/objectstore"
 	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
 	"github.com/nubitio/nubit-agent/internal/tls"
@@ -93,7 +94,17 @@ func main() {
 	fileManager := files.Manager{Sites: siteStore}
 	cronManager := cron.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "cron")}
 	logManager := logs.Manager{Sites: siteStore}
-	backupManager := backup.Manager{Sites: siteStore, Dir: filepath.Join(stateDir, "backups")}
+	// Off-host backups. A node with no NUBIT_BACKUP_S3_* configuration gets a
+	// manager with no store, and backup commands are refused rather than run
+	// against nothing.
+	blobStore, err := objectstore.New(context.Background(), objectstore.ConfigFromEnv())
+	if err != nil {
+		log.Fatalf("initialize backup storage: %v", err)
+	}
+	backupManager := backup.Manager{Sites: siteStore, TempDir: filepath.Join(stateDir, "tmp")}
+	if blobStore != nil {
+		backupManager.Blobs = blobStore
+	}
 	// Caddy's storage location is overridable because a host that installed it
 	// some other way puts it elsewhere.
 	certificates := tls.Inspector{StorageDir: os.Getenv("NUBIT_CADDY_CERTIFICATE_DIR")}
@@ -201,7 +212,16 @@ func startPolling(
 	if configDir == "" {
 		configDir = defaultConfigDir
 	}
-	manager := enrollment.Manager{Directory: configDir, ControlURL: controlURL}
+	stateDir := os.Getenv("NUBIT_AGENT_STATE_DIR")
+	if stateDir == "" {
+		stateDir = defaultStateDir
+	}
+	manager := enrollment.Manager{
+		Directory:      configDir,
+		StateDirectory: stateDir,
+		ControlURL:     controlURL,
+		RootCAPath:     os.Getenv("NUBIT_STEPCA_ROOT_CERT_PATH"),
+	}
 	if enrollmentToken := os.Getenv("NUBIT_AGENT_ENROLLMENT_TOKEN"); enrollmentToken != "" && !manager.Enrolled() {
 		if err := manager.Enroll(ctx, enrollmentToken); err != nil {
 			log.Fatalf("nubit-agent: enrollment failed: %v", err)

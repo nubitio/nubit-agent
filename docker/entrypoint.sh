@@ -92,6 +92,58 @@ if command -v cron >/dev/null 2>&1; then
 	cron
 fi
 
+# Stalwart runs beside the web stack on nodes that carry mail. The agent
+# administers it over JMAP on loopback; on a web-only node NUBIT_MAIL_API_SECRET
+# is unset and this is skipped entirely (the agent then refuses mail commands).
+#
+# Runs in the background so the agent can start polling immediately; mail
+# provisioning jobs are the only ones that need Stalwart, and by the time one
+# arrives the bootstrap below has finished.
+start_stalwart() {
+	[ -n "${NUBIT_MAIL_API_SECRET:-}" ] || return 0
+	command -v stalwart >/dev/null 2>&1 || return 0
+
+	admin_user=${NUBIT_MAIL_API_USER:-nubit-agent}
+	recovery="${admin_user}:${NUBIT_MAIL_API_SECRET}"
+	mkdir -p /etc/stalwart /var/lib/stalwart
+
+	if [ ! -s /etc/stalwart/config.json ]; then
+		# First run: bootstrap unattended. Bootstrap mode (no config.json) is the
+		# only state in which the Bootstrap singleton is writable; applying it
+		# writes /etc/stalwart/config.json and the rest of the config to the store.
+		# Bootstrap mode is entered when --config points at a file that does not
+		# exist yet; the apply below writes it.
+		rm -f /etc/stalwart/config.json
+		STALWART_RECOVERY_ADMIN="$recovery" stalwart --config /etc/stalwart/config.json \
+			>/var/log/nubit/stalwart-bootstrap.log 2>&1 &
+		boot_pid=$!
+		cat >/tmp/stalwart-bootstrap.json <<EOF
+{"@type":"update","object":"Bootstrap","value":{"serverHostname":"${NUBIT_MAIL_HOSTNAME:-mail.$(hostname).local}","defaultDomain":"${NUBIT_MAIL_DEFAULT_DOMAIN:-localhost.local}","dataStore":{"@type":"RocksDb","path":"/var/lib/stalwart/data"},"directory":{"@type":"Internal"},"generateDkimKeys":true,"requestTlsCertificate":false}}
+EOF
+		bootstrapped=
+		for _ in $(seq 1 60); do
+			if STALWART_URL=http://127.0.0.1:8080 STALWART_USER="$admin_user" STALWART_PASSWORD="$NUBIT_MAIL_API_SECRET" \
+				stalwart-cli apply --file /tmp/stalwart-bootstrap.json >>/var/log/nubit/stalwart-bootstrap.log 2>&1; then
+				bootstrapped=1
+				break
+			fi
+			sleep 2
+		done
+		kill "$boot_pid" 2>/dev/null || true
+		wait "$boot_pid" 2>/dev/null || true
+		if [ -z "$bootstrapped" ] || [ ! -s /etc/stalwart/config.json ]; then
+			echo "warning: stalwart bootstrap did not complete; mail commands will be refused" >&2
+			return 0
+		fi
+	fi
+
+	# Normal mode. STALWART_RECOVERY_ADMIN stays set so the agent's credential
+	# keeps working after the server provisions its own permanent admin.
+	STALWART_RECOVERY_ADMIN="$recovery" stalwart --config /etc/stalwart/config.json \
+		>/var/log/nubit/stalwart.log 2>&1 &
+}
+start_stalwart &
+
 start_php_fpm 8.4
 start_php_fpm 8.5
 caddy start --config /etc/caddy/Caddyfile --adapter caddyfile

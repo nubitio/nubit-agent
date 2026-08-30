@@ -185,12 +185,15 @@ future commands and must not be presented as available Agent operations.
 
 ## Backups and mail
 
-1. Replace or converge the local `.tar.gz` backup groundwork with the MVP's S3
-   storage boundary, plan tiers, RPO/RTO evidence, restore rehearsals, and
-   confirmation requirements before presenting backups as ready for sale.
-2. The Agent has Stalwart/mail capability. Complete mailbox lifecycle
-   integration remains pending; mailbox restoration remains assisted under the
-   MVP baseline.
+1. **Done:** backups converged onto S3 object storage (`NUBIT_BACKUP_S3_*`,
+   MinIO/Wasabi). Archives carry the document root + a `mariadb-dump` per site
+   database; `Restore` rewrites files and re-imports the dumps. **Still pending
+   before sale:** the Basic/Business/Premium cadence scheduler, per-tier
+   retention/RPO/RTO enforcement, and restore rehearsals.
+2. **Done (Docker image):** the Agent bundles Stalwart and boots it unattended
+   when `NUBIT_MAIL_API_SECRET` is set; portal covers domain/mailbox create +
+   password/quota/delete. **Pending:** bare-metal `install.sh --profile web,mail`
+   systemd wiring; mailbox restoration remains assisted under the MVP baseline.
 
 Mail is intentionally after web/SFTP/TLS/backups because it has the highest
 deliverability and abuse-management burden.

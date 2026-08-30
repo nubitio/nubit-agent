@@ -113,16 +113,16 @@ func issueLeaf(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, cn s
 }
 
 // TestEnrollSendsValidRequest asserts the wire format of an enrollment POST:
-// the JSON body carries token, csr, agentId under the names Nubit Control
+// the JSON body carries enrollment_token, csr, agent_id under the names Nubit Control
 // expects; the path is /api/agent/enroll; the content-type is JSON. The TLS
 // server is configured with ClientCAs that trust the CA, so a self-signed
 // server is accepted by the in-memory client.
 func TestEnrollSendsValidRequest(t *testing.T) {
 	ca, caKey := selfSignedCA(t)
 	var received struct {
-		Token   string `json:"token"`
+		Token   string `json:"enrollment_token"`
 		CSR     string `json:"csr"`
-		AgentID string `json:"agentId"`
+		AgentID string `json:"agent_id"`
 	}
 	server := startTLSServer(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/agent/enroll" {

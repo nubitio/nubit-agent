@@ -75,11 +75,12 @@ EOF
 sudo systemctl restart nubit-agent
 ```
 
-Do **not** use `--enrollment-token` / `NUBIT_AGENT_ENROLLMENT_TOKEN` for the
-current MVP. That path is Agent-side partial/future mTLS code. Current Nubit
-Control does not expose `POST /api/agent/enroll`; if an enrollment token is set
-and no certificate is present, the Agent attempts enrollment and can fail at
-startup. mTLS enrollment and renewal remain pending work.
+The default MVP path remains the per-server `NUBIT_AGENT_TOKEN`. mTLS enrollment
+is available for a staged cutover when Control is deployed with its Step-CA
+adapter and Caddy client-certificate verification. Issue the one-time token
+from Control, configure `NUBIT_STEPCA_ROOT_CERT_PATH` with the pinned CA root,
+then run `nubit-agent enroll --token <token>` (or install with
+`--enrollment-token`). Do not configure both token types at once.
 
 `--dry-run` prints every action without touching the machine, and `--version
 <tag>` pins a specific release. Re-running the installer upgrades in place.
@@ -141,14 +142,11 @@ The agent also publishes OS, architecture, memory, disk, IP, relevant package
 versions, capabilities, and PHP runtime usage to `POST /api/agent/inventory`
 at startup and every five minutes.
 
-When mTLS credentials are absent, the Agent has enrollment-side behavior: it
-attempts `POST /api/agent/enroll` with a CSR and the enrollment token, persists
-the generated key, issued certificate, and CA material, and provides for
-renewal. Nubit Control does not currently expose the `enroll` or `renew`
-endpoints. Consequently, the end-to-end enrollment contract and mTLS transport
-have not been deployed or validated; configuring an enrollment token against
-current Control can fail Agent startup. This is pending/future code, not an
-operational MVP capability.
+With an enrollment token, the Agent creates its durable identity in the state
+directory, posts a CSR to Control, persists the issued certificate and CA
+material, and renews it before expiry. This remains an opt-in migration path:
+the Control TLS terminator must be configured with the private CA root before
+an enrolled Agent can poll successfully.
 
 ## Security model
 
@@ -200,14 +198,22 @@ fixed operations and send passwords through stdin; secrets are not returned in
 command results. Site deletion is blocked until SFTP access and
 owned databases have been removed.
 
-FTP is not installed by the web profile. The Agent has Stalwart/mail capability,
-but complete mailbox lifecycle integration is pending; mailbox restoration
-remains assisted for the MVP. See the MVP ADR before making mailbox or restore
-assumptions.
+FTP is not installed by the web profile. On the **Docker image** the Agent
+bundles Stalwart (`stalwart` + `stalwart-cli`, musl static): when
+`NUBIT_MAIL_API_SECRET` is set the entrypoint boots Stalwart beside the web
+stack (unattended `Bootstrap` singleton via `stalwart-cli apply`, RocksDB store,
+internal directory, DKIM on, ACME off) and the Agent administers it over JMAP on
+`http://127.0.0.1:8080`. A web-only node leaves the secret unset and `mail.*`
+commands are refused. **Pending:** the bare-metal `scripts/install.sh
+--profile web,mail` still only downloads the binary — the systemd unit + bootstrap
+for the non-Docker path is follow-up. Mailbox *restore* remains assisted.
 
-The current Agent backup commands can create, list, and restore local `.tar.gz`
-archives under the Agent state directory and retain the latest seven archives.
-That behavior is useful implementation groundwork only. The approved MVP backup
-product remains S3-backed storage with the Basic/Business/Premium cadence,
-retention, RPO, and RTO in ADR-001; tier enforcement, S3 storage, restore
-rehearsals, and sales readiness remain pending.
+Backups are **S3 object storage** (`NUBIT_BACKUP_S3_*` — MinIO locally, Wasabi
+in production; `NUBIT_BACKUP_S3_FORCE_PATH_STYLE=1` for MinIO). Each archive is a
+gzip tarball with `files/` (the document root), `databases/<db>.sql` (a
+`mariadb-dump` per site database) and `manifest.json`. `Restore` rewrites the
+files (chowned to the site's Unix user) and re-imports the dumps through
+`mariadb`. Prune keeps the newest seven per site. There is **no local copy**.
+Still pending for the ADR-001 product: a scheduler for the Basic/Business/Premium
+cadence and enforcement of the per-tier retention / RPO / RTO. Backups today are
+operator/customer-initiated through the portal.

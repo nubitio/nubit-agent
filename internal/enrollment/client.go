@@ -21,21 +21,21 @@ import (
 // reconstruction (e.g. an intermediate + root bundle from step-ca).
 type EnrollResponse struct {
 	Certificate   string    `json:"certificate"`
-	CACertificate string    `json:"caCertificate"`
-	CAChain       []string  `json:"caChain,omitempty"`
+	CACertificate string    `json:"ca_chain"`
+	CAChain       []string  `json:"ca_chain_entries,omitempty"`
 	Serial        string    `json:"serial,omitempty"`
-	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at,omitempty"`
 }
 
 type enrollRequest struct {
-	Token   string `json:"token"`
+	Token   string `json:"enrollment_token"`
 	CSR     string `json:"csr"`
-	AgentID string `json:"agentId"`
+	AgentID string `json:"agent_id"`
 }
 
 type renewRequest struct {
 	CSR     string `json:"csr"`
-	AgentID string `json:"agentId"`
+	AgentID string `json:"agent_id"`
 }
 
 // Client posts CSRs to Nubit Control's enroll and renew endpoints and parses
