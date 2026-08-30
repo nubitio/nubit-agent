@@ -80,6 +80,13 @@ type Executor struct {
 	exemptTypes    map[string]bool
 	rateLimitersMu sync.Mutex
 	rateLimiters   map[string]*tokenBucket
+
+	// tlsIssueWait is how long tls.letsencrypt.enable waits for Caddy to
+	// finish obtaining a certificate before reporting that none exists. Zero
+	// keeps the historical behaviour (fail immediately when Caddy has not
+	// issued yet). tlsIssuePoll is the re-check interval while waiting.
+	tlsIssueWait time.Duration
+	tlsIssuePoll time.Duration
 }
 
 // SetAuditLogger installs the audit log used to record every command the
@@ -194,6 +201,8 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		typeRates:      config.TypeRates,
 		exemptTypes:    exempt,
 		rateLimiters:   map[string]*tokenBucket{},
+		tlsIssueWait:   config.TLSIssueWait,
+		tlsIssuePoll:   config.TLSIssuePollInterval,
 	}
 	if executor.typeTimeouts == nil {
 		executor.typeTimeouts = map[string]time.Duration{}
@@ -919,15 +928,23 @@ func (executor *Executor) executeMail(commandType string, payload json.RawMessag
 // Caddy issues and renews on its own; the agent's job is to say what came of
 // it. For TLSCertificateInspect, the absence of a certificate is reported as
 // a state (the control plane keeps asking until the domain resolves). For
-// TLSLetsEncryptEnable, the same absence is surfaced as a failure with an
-// explicit message so the operator sees that the agent cannot drive ACME
-// itself, and the control plane does not assume the job is still running.
+// TLSLetsEncryptEnable, the agent waits up to tlsIssueWait for Caddy to
+// finish an ACME order that is already in flight (the node's Caddy is pointed
+// at an ACME CA it can reach); if the wait elapses with still no certificate,
+// the absence is surfaced as a failure with an explicit message so the
+// operator sees the issue never completed and the control plane does not
+// assume the job is still running. With tlsIssueWait at zero the wait is
+// skipped and the failure is immediate — the historical behaviour for a node
+// whose Caddy has no reachable CA.
 func (executor *Executor) executeTLS(commandType, siteID, challengeType string, domains []string) ([]byte, error) {
 	if executor.tls == nil {
 		return nil, errors.New("TLS inspector is not configured")
 	}
 
 	evidence, err := executor.tls.Inspect(siteID)
+	if errors.Is(err, tls.ErrNoCertificate) && commandType == TLSLetsEncryptEnable && executor.tlsIssueWait > 0 {
+		evidence, err = executor.waitForCertificate(siteID)
+	}
 	if errors.Is(err, tls.ErrNoCertificate) {
 		if commandType == TLSLetsEncryptEnable {
 			domain := siteID
@@ -971,4 +988,30 @@ func (executor *Executor) executeTLS(commandType, siteID, challengeType string, 
 	}
 
 	return json.Marshal(report)
+}
+
+// waitForCertificate re-inspects Caddy's storage until a certificate appears
+// or tlsIssueWait elapses. It is only reached for tls.letsencrypt.enable on a
+// node whose Caddy is pointed at a reachable ACME CA: the order is already in
+// flight when this command runs, and issuance against a private step-ca on the
+// same network is seconds, not the minutes a public HTTP-01 round-trip can
+// take. The first Inspect has already happened; this loop starts by sleeping.
+func (executor *Executor) waitForCertificate(siteID string) (tls.Evidence, error) {
+	step := executor.tlsIssuePoll
+	if step <= 0 {
+		step = 5 * time.Second
+	}
+	deadline := time.Now().Add(executor.tlsIssueWait)
+
+	var (
+		evidence tls.Evidence
+		err      = tls.ErrNoCertificate
+	)
+	for {
+		time.Sleep(step)
+		evidence, err = executor.tls.Inspect(siteID)
+		if !errors.Is(err, tls.ErrNoCertificate) || time.Now().After(deadline) {
+			return evidence, err
+		}
+	}
 }

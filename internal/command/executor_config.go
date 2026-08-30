@@ -36,6 +36,15 @@ type ExecutorConfig struct {
 	// belong here. Zero or negative DefaultRatePerMinute also exempts all
 	// types by virtue of the rate limit being off.
 	ExemptTypes map[string]bool
+	// TLSIssueWait is how long tls.letsencrypt.enable waits for Caddy to
+	// finish an ACME order that is already in flight before reporting that no
+	// certificate exists. Zero (the default) fails immediately, which is the
+	// right behaviour for a node whose Caddy has no ACME CA it can reach. Set
+	// it (NUBIT_TLS_ISSUE_WAIT) on nodes that run NUBIT_TLS_ACME_CA.
+	TLSIssueWait time.Duration
+	// TLSIssuePollInterval is how often certificate storage is re-checked
+	// while waiting. Defaults to 5s when unset.
+	TLSIssuePollInterval time.Duration
 }
 
 // ConfigFromEnv reads NUBIT_AGENT_* environment variables and returns a
@@ -81,6 +90,17 @@ func ConfigFromEnv() ExecutorConfig {
 			continue
 		}
 		config.TypeTimeouts[commandType] = parsed
+	}
+
+	if raw := os.Getenv("NUBIT_TLS_ISSUE_WAIT"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			config.TLSIssueWait = parsed
+		}
+	}
+	if raw := os.Getenv("NUBIT_TLS_ISSUE_POLL_INTERVAL"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			config.TLSIssuePollInterval = parsed
+		}
 	}
 
 	if raw := os.Getenv("NUBIT_AGENT_RATE_LIMIT_DEFAULT"); raw != "" {

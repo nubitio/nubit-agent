@@ -144,6 +144,27 @@ EOF
 }
 start_stalwart &
 
+# When the node's Caddy is pointed at an ACME CA it can actually reach — a
+# private step-ca on the compose network, or a real ACME endpoint — rewrite the
+# global options so automatic HTTPS is on and issuance goes to that CA. Without
+# NUBIT_TLS_ACME_CA the image's Caddyfile is left untouched (auto_https off),
+# so a plain web node behaves exactly as before.
+configure_caddy_acme() {
+	[ -n "${NUBIT_TLS_ACME_CA:-}" ] || return 0
+	{
+		echo '{'
+		echo '	admin 127.0.0.1:2019'
+		echo "	acme_ca ${NUBIT_TLS_ACME_CA}"
+		[ -n "${NUBIT_TLS_ACME_CA_ROOT:-}" ] && echo "	acme_ca_root ${NUBIT_TLS_ACME_CA_ROOT}"
+		[ -n "${NUBIT_TLS_ACME_EMAIL:-}" ] && echo "	email ${NUBIT_TLS_ACME_EMAIL}"
+		echo '}'
+		echo
+		echo 'import /etc/caddy/sites-enabled/*.caddy'
+	} >/etc/caddy/Caddyfile
+	echo "nubit-agent: Caddy ACME issuance via ${NUBIT_TLS_ACME_CA}" >&2
+}
+configure_caddy_acme
+
 start_php_fpm 8.4
 start_php_fpm 8.5
 caddy start --config /etc/caddy/Caddyfile --adapter caddyfile

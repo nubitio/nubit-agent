@@ -3,7 +3,9 @@ package command
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nubitio/nubit-agent/internal/tls"
 )
@@ -15,6 +17,26 @@ type fakeInspector struct {
 
 func (inspector fakeInspector) Inspect(string) (tls.Evidence, error) {
 	return inspector.evidence, inspector.err
+}
+
+// slowInspector reports ErrNoCertificate for the first failFor calls, then the
+// issued evidence — standing in for Caddy finishing an ACME order that was
+// already in flight when tls.letsencrypt.enable ran.
+type slowInspector struct {
+	mu       sync.Mutex
+	calls    int
+	failFor  int
+	evidence tls.Evidence
+}
+
+func (inspector *slowInspector) Inspect(string) (tls.Evidence, error) {
+	inspector.mu.Lock()
+	defer inspector.mu.Unlock()
+	inspector.calls++
+	if inspector.calls <= inspector.failFor {
+		return tls.Evidence{}, tls.ErrNoCertificate
+	}
+	return inspector.evidence, nil
 }
 
 func issuedEvidence() tls.Evidence {
@@ -192,6 +214,55 @@ func TestExecuteTLSLetsEncryptEnableWithCertReturnsSuccess(t *testing.T) {
 	}
 	if output["challengeType"] != "http-01" {
 		t.Fatalf("the requested challenge type was not echoed: %v", output)
+	}
+}
+
+// On a node whose Caddy is pointed at a reachable ACME CA, tls.letsencrypt.enable
+// waits out an issuance that is already in flight instead of failing on the
+// first look. TLSIssueWait must be set for the wait to happen at all.
+func TestExecuteTLSLetsEncryptEnableWaitsForIssuanceInFlight(t *testing.T) {
+	inspector := &slowInspector{failFor: 2, evidence: issuedEvidence()}
+	executor := NewExecutorWithConfig(
+		ExecutorConfig{TLSIssueWait: 2 * time.Second, TLSIssuePollInterval: 20 * time.Millisecond},
+		NewMemoryStore(),
+		inspector,
+	)
+	result, err := executor.Execute(Command{
+		ID: "cmd_tls_enable_wait", Type: TLSLetsEncryptEnable, Version: 1, IdempotencyKey: "tls:enable:wait",
+		Payload: []byte(`{"siteId":"example.pe","domains":["example.pe"],"challengeType":"http-01"}`),
+	})
+	if err != nil {
+		t.Fatalf("enable should succeed once the certificate appears: %v", err)
+	}
+	if result.Status != "succeeded" {
+		t.Fatalf("unexpected status: %q", result.Status)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output["issuer"] != "Test Issuer X1" {
+		t.Fatalf("the issued certificate was not reported: %#v", output)
+	}
+}
+
+// The wait is bounded: if nothing is ever issued the command still fails with
+// the explicit message, it just does so after TLSIssueWait rather than at once.
+func TestExecuteTLSLetsEncryptEnableGivesUpAfterTheWait(t *testing.T) {
+	executor := NewExecutorWithConfig(
+		ExecutorConfig{TLSIssueWait: 80 * time.Millisecond, TLSIssuePollInterval: 20 * time.Millisecond},
+		NewMemoryStore(),
+		fakeInspector{err: tls.ErrNoCertificate},
+	)
+	_, err := executor.Execute(Command{
+		ID: "cmd_tls_enable_giveup", Type: TLSLetsEncryptEnable, Version: 1, IdempotencyKey: "tls:enable:giveup",
+		Payload: []byte(`{"siteId":"example.pe","domains":["example.pe"],"challengeType":"http-01"}`),
+	})
+	if err == nil {
+		t.Fatal("enable should still fail when no certificate is ever issued")
+	}
+	if !strings.Contains(err.Error(), "tls.letsencrypt.enable is not implemented") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

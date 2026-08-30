@@ -96,9 +96,15 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
 - Mail command capability when mail is configured: `mail.domain.create`,
   `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`,
   `mail.mailbox.set-quota`, `mail.mailbox.delete`, and `mail.inventory`.
-- Preparatory HTTP-01 TLS enablement stub through `tls.letsencrypt.enable`;
-  it configures the site for Caddy/Let's Encrypt automation but does not yet
-  implement an audited issue, renew, or revoke certificate lifecycle contract.
+- HTTP-01 TLS enablement through `tls.letsencrypt.enable`: Caddy issues and
+  renews; the command reports the resulting certificate (issuer, SAN list,
+  fingerprint, expiry) without ever reading a key. On a node whose Caddy is
+  pointed at a reachable ACME CA (`NUBIT_TLS_ACME_CA`, e.g. a private step-ca —
+  set `NUBIT_TLS_ACME_CA_ROOT` to the CA root and `NUBIT_TLS_ISSUE_WAIT` to a
+  bound like `150s`) the command waits out an in-flight order before reporting
+  evidence; with no reachable CA it fails fast with an explicit message.
+  `tls.issue` / `tls.renew` / `tls.revoke` — an audited lifecycle contract that
+  holds keys — remain future work.
 
 ## Release integrity
 
