@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# Mirrors the fast gates of the CI "Vet and test" job
+# (.github/workflows/ci.yml) so a push that would turn main red is caught
+# locally instead. The slower CI jobs (installer dry-runs, the PHP-version
+# provisioning matrix) still run only in CI.
+#
+# Bypass for a work-in-progress push:  git push --no-verify
+# or:  SKIP_HOOKS=1 git push
+#
+# Enable after cloning:  git config core.hooksPath .githooks
+# (or run  scripts/setup-hooks.sh)
+
+set -e
+
+if [ "$SKIP_HOOKS" = "1" ]; then
+  echo "pre-push: skipped (SKIP_HOOKS=1)"
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "pre-push: go toolchain not found on PATH" >&2
+  exit 1
+fi
+
+echo "==> gofmt"
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+  echo "pre-push: these files are not gofmt-formatted:" >&2
+  echo "$unformatted" >&2
+  echo "run: gofmt -w ." >&2
+  exit 1
+fi
+
+echo "==> go vet ./..."
+go vet ./...
+
+echo "==> go build ./..."
+go build ./...
+
+echo "==> go test -race ./..."
+go test -race ./...
+
+echo "pre-push: all checks passed"

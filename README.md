@@ -114,11 +114,16 @@ in [`docs/roadmap.md`](docs/roadmap.md).
 ## Local development
 
 ```bash
+scripts/setup-hooks.sh   # once per clone: enables the pre-push checks
 go test ./...
 go run ./cmd/nubit-agent
 nubit-agent --version
 curl http://127.0.0.1:9090/healthz
 ```
+
+`scripts/setup-hooks.sh` points `core.hooksPath` at `.githooks/`, whose
+`pre-push` runs the same `gofmt` / `go vet` / `go test -race` gates as CI.
+Bypass a work-in-progress push with `git push --no-verify`.
 
 The health endpoint binds to `127.0.0.1:9090` by default. Configure another address
 only through `NUBIT_AGENT_LISTEN_ADDR`; configure persistent state with
