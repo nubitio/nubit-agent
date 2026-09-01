@@ -9,8 +9,9 @@ For the current MVP, Debian 12 and Ubuntu 26.04 on amd64 are the supported
 web-profile platforms. Ubuntu 26.04 amd64 support includes operator-external
 evidence: the operator ran `scripts/test-installer-ubuntu2604-systemd.sh
 --version <tag>` on a real Ubuntu 26.04 amd64 VM and confirmed OK; no local
-artifact is present in this repository. arm64 is outside the MVP and is not
-supported. See
+artifact is present in this repository. linux/arm64 on the same distros is
+accepted by the installer with a mileage warning; it has not had the equivalent
+operator-external real-VM validation. See
 [`docs/adr/ADR-002-mvp-platform-validation.md`](docs/adr/ADR-002-mvp-platform-validation.md)
 and
 [`docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md`](docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md).
@@ -170,8 +171,9 @@ The web-profile is supported on Debian 12 amd64 and Ubuntu 26.04 amd64, with Cad
 PHP-FPM, MariaDB, and native SFTP through OpenSSH. `--database postgres` installs
 PostgreSQL instead. Ubuntu 26.04 amd64 has an
 operator-external real-VM systemd validation confirmation and no local artifact
-in this repository. arm64 is outside the MVP and is rejected by the installer
-because it is not supported. Review the installation actions before running them:
+in this repository. linux/arm64 hosts (same distros, same sury.org packages) are
+accepted with a warning; they lack that operator-external real-VM validation.
+Review the installation actions before running them:
 
 ```bash
 sudo sh scripts/install.sh --dry-run --profile web

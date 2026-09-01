@@ -124,32 +124,36 @@ jobs:
             sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci
           '
 
-      - name: Refuses Ubuntu 26.04 arm64 before validation
+      - name: Accepts Ubuntu 26.04 arm64 with a warning
         run: |
           docker run --rm -v "$PWD:/src" -w /src ubuntu:26.04 sh -c '
             apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
             mkdir -p /tmp/nubit-mock-bin
             printf "%s\n" "#!/bin/sh" "[ \"\$1\" = -m ] && { printf \"%s\\n\" aarch64; exit 0; }" "exec /bin/uname \"\$@\"" > /tmp/nubit-mock-bin/uname
             chmod 0755 /tmp/nubit-mock-bin/uname
-            if PATH="/tmp/nubit-mock-bin:$PATH" sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci; then
-              echo "Ubuntu 26.04 arm64 was accepted" >&2
-              exit 1
-            fi
-            echo "correctly refused"
+            out=$(PATH="/tmp/nubit-mock-bin:$PATH" sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci 2>&1) || {
+              echo "$out"; echo "Ubuntu 26.04 arm64 was rejected" >&2; exit 1;
+            }
+            printf "%s\n" "$out" | grep -q "less battle-tested" || {
+              echo "$out"; echo "expected the arm64 mileage warning" >&2; exit 1;
+            }
+            echo "correctly accepted with a warning"
           '
 
-      - name: Refuses Debian 12 arm64 before validation
+      - name: Accepts Debian 12 arm64 with a warning
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:12-slim sh -c '
             apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
             mkdir -p /tmp/nubit-mock-bin
             printf "%s\n" "#!/bin/sh" "[ \"\$1\" = -m ] && { printf \"%s\\n\" aarch64; exit 0; }" "exec /bin/uname \"\$@\"" > /tmp/nubit-mock-bin/uname
             chmod 0755 /tmp/nubit-mock-bin/uname
-            if PATH="/tmp/nubit-mock-bin:$PATH" sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci; then
-              echo "Debian 12 arm64 was accepted" >&2
-              exit 1
-            fi
-            echo "correctly refused"
+            out=$(PATH="/tmp/nubit-mock-bin:$PATH" sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci 2>&1) || {
+              echo "$out"; echo "Debian 12 arm64 was rejected" >&2; exit 1;
+            }
+            printf "%s\n" "$out" | grep -q "less battle-tested" || {
+              echo "$out"; echo "expected the arm64 mileage warning" >&2; exit 1;
+            }
+            echo "correctly accepted with a warning"
           '
 
       - name: Install the web profile on Ubuntu 26.04

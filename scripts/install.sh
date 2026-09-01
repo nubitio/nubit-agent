@@ -62,6 +62,10 @@ fail() {
   exit 1
 }
 
+warn() {
+  printf 'warning: %s\n' "$1" >&2
+}
+
 update_env_assignment() {
   file=$1
   name=$2
@@ -191,16 +195,14 @@ if [ -r /etc/os-release ]; then
   host_version=${VERSION_ID:-}
 fi
 
+# $arch is already constrained to amd64|arm64 above. amd64 is the battle-tested
+# target; arm64 works (same distros, same sury.org repo, arm64 binary) but has
+# had less mileage, so it warns rather than blocks.
 case "${host_os}:${host_version}:${arch}" in
-  debian:12:amd64 | debian:12:)
+  debian:12:amd64 | debian:12: | ubuntu:26.04:amd64 | ubuntu:26.04:)
     ;;
-  debian:12:*)
-    fail 'Debian 12 support is validated for linux/amd64 only; this Debian architecture is not supported.'
-    ;;
-  ubuntu:26.04:amd64 | ubuntu:26.04:)
-    ;;
-  ubuntu:26.04:*)
-    fail 'Ubuntu 26.04 support is validated for linux/amd64 only; this Ubuntu architecture is not supported.'
+  debian:12:arm64 | ubuntu:26.04:arm64)
+    warn "${host_os} ${host_version} on linux/arm64 is supported but less battle-tested than amd64."
     ;;
 esac
 
@@ -257,8 +259,9 @@ fi
 # ---------------------------------------------------------------------------
 # Optional web profile. Debian 12 and Ubuntu 26.04 use packages.sury.org,
 # which exposes versioned PHP-FPM pools under /etc/php/<version>/fpm/pool.d,
-# the contract the agent uses. The agent may ship arm64 binaries, but the MVP
-# Debian/Ubuntu web profile is validated for amd64 only.
+# the contract the agent uses. sury.org ships amd64 and arm64 for both distros
+# and the deb line pins no architecture, so arm64 resolves automatically; the
+# arch gate above already warned that arm64 has had less mileage.
 # ---------------------------------------------------------------------------
 
 if [ -n "$profile" ]; then
@@ -276,13 +279,11 @@ if [ -n "$profile" ]; then
   . /etc/os-release
   case "${ID:-}:${VERSION_ID:-}" in
     debian:12)
-      [ "$arch" = amd64 ] || fail 'Debian 12 web profile is validated for linux/amd64 only.'
       run apt-get update
       run apt-get install -y acl ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository bookworm
       ;;
     ubuntu:26.04)
-      [ "$arch" = amd64 ] || fail 'Ubuntu 26.04 web profile is validated for linux/amd64 only.'
       run apt-get update
       run apt-get install -y acl ca-certificates curl caddy lsb-release "$database_package" openssh-server
       install_sury_php_repository resolute

@@ -14,8 +14,9 @@ and ACME TLS. Ubuntu
 26.04 amd64 support includes operator-external evidence: the operator ran
 `scripts/test-installer-ubuntu2604-systemd.sh --version <tag>` on a real Ubuntu
 26.04 amd64 VM and confirmed OK; no local artifact is present in this
-repository. arm64 is outside the MVP and remains unsupported until separate
-validation has been executed and recorded. The MVP platform choices, including DNS, certificate, S3
+repository. linux/arm64 on the same distros is accepted by the installer with a
+mileage warning (same sury.org repo, arm64 binary) but has not had the
+equivalent operator-external real-VM systemd validation. The MVP platform choices, including DNS, certificate, S3
 backup storage, and Stalwart mailbox boundaries, are recorded in
 [`adr/ADR-001-mvp-hosting-platform-baseline.md`](adr/ADR-001-mvp-hosting-platform-baseline.md)
 and the platform-support clarification in
@@ -43,8 +44,8 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
 - `system.ping` command.
 - Debian 12 web-profile installer with `--dry-run`.
 - Ubuntu 26.04 amd64 web-profile installer path with Sury keyring fingerprint
-  verification and PHP-source apt pinning; Ubuntu arm64 is rejected until it is
-  separately validated.
+  verification and PHP-source apt pinning; Debian/Ubuntu arm64 is accepted with
+  a mileage warning, short of amd64's operator-external real-VM validation.
 - Validated `site.create` payload contract: domain, Unix user, and PHP 8.3,
   8.4, or 8.5 (8.4 recommended for new sites).
 - Isolated-site provisioner for a system user and document root.
@@ -73,10 +74,11 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
 - Drift inspection through `system.reconcile`.
 - CI on every push and pull request: gofmt, vet, race-enabled tests, cross
   builds for linux/amd64 and linux/arm64, and shellcheck plus a dry run of the
-  installer. The linux/arm64 build artifact is not an MVP support claim.
+  installer on both amd64 and mocked-arm64 hosts.
 - Tagged releases publishing verified `linux/amd64` and `linux/arm64` binaries
-  with `SHA256SUMS`, gated on a green suite. Only amd64 is supported for the
-  current Debian 12 / Ubuntu 26.04 MVP web profile.
+  with `SHA256SUMS`, gated on a green suite. The installer runs the Debian 12 /
+  Ubuntu 26.04 web profile on both; amd64 additionally has operator-external
+  real-VM systemd validation.
 - `scripts/install.sh` installing the binary, systemd unit and state
   directories, verifying checksums before writing anything.
 - Checksum-verified self-update that restarts only between polls, never with a
@@ -223,5 +225,6 @@ Run integration tests in an isolated Debian 12 container before enabling a
 command on a real server. For Ubuntu 26.04, the supported MVP boundary is amd64
 only and requires both the container installer smoke test and the real
 systemd-based validation script to pass; the current amd64 systemd evidence is
-operator-external with no local artifact. Ubuntu arm64 must not be represented
-as validated or supported until an equivalent run is recorded.
+operator-external with no local artifact. Debian/Ubuntu arm64 is installable
+(the installer accepts it with a warning) but must not be represented as having
+the equivalent operator-external real-VM validation until such a run is recorded.
