@@ -3,6 +3,7 @@ package files
 import (
 	"archive/zip"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/site"
@@ -27,6 +29,11 @@ type Entry struct {
 	Type       string `json:"type"`
 	Size       int64  `json:"size"`
 	ModifiedAt string `json:"modifiedAt"`
+	// Owner is the login name of the file's owning uid (falling back to the
+	// numeric uid when it has no passwd entry); Mode is the octal permission
+	// string, e.g. "0644". Both are what the panel shows in its file table.
+	Owner string `json:"owner,omitempty"`
+	Mode  string `json:"mode,omitempty"`
 }
 
 type ListResult struct {
@@ -56,6 +63,7 @@ func (manager Manager) List(siteID, rel string) (ListResult, error) {
 		return ListResult{}, err
 	}
 	result := ListResult{Path: rel, Entries: []Entry{}}
+	owners := map[uint32]string{}
 	for i, entry := range entries {
 		if i >= 500 {
 			break
@@ -73,9 +81,30 @@ func (manager Manager) List(siteID, rel string) (ListResult, error) {
 			Type:       kind,
 			Size:       info.Size(),
 			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
+			Owner:      ownerName(info, owners),
+			Mode:       fmt.Sprintf("%04o", info.Mode().Perm()),
 		})
 	}
 	return result, nil
+}
+
+// ownerName resolves the owning uid of a listed entry to a login name, reusing
+// the per-listing cache so a folder of a thousand files does one passwd lookup,
+// not a thousand. It returns "" when the platform does not expose a uid.
+func ownerName(info os.FileInfo, cache map[uint32]string) string {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	if name, seen := cache[stat.Uid]; seen {
+		return name
+	}
+	name := strconv.FormatUint(uint64(stat.Uid), 10)
+	if account, err := user.LookupId(name); err == nil && account.Username != "" {
+		name = account.Username
+	}
+	cache[stat.Uid] = name
+	return name
 }
 
 func (manager Manager) Mkdir(siteID, rel string) error {

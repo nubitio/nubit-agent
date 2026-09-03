@@ -55,6 +55,40 @@ func TestListWriteReadDeleteStayInsideDocumentRoot(t *testing.T) {
 	}
 }
 
+func TestListReportsOwnerAndMode(t *testing.T) {
+	root := t.TempDir()
+	public := filepath.Join(root, "public")
+	if err := os.Mkdir(public, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := site.NewMemoryStateStore()
+	if err := store.Save(site.State{SiteID: "example.com", SystemUser: "nobody", DocumentRoot: public}); err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{Sites: store}
+	if err := manager.Write("example.com", "page.html", []byte("<h1>hola</h1>")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(public, "page.html"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := manager.List("example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if 1 != len(listed.Entries) {
+		t.Fatalf("entries: %#v", listed.Entries)
+	}
+	entry := listed.Entries[0]
+	if entry.Mode != "0640" {
+		t.Fatalf("mode: %q", entry.Mode)
+	}
+	if entry.Owner == "" {
+		t.Fatalf("owner was not reported: %#v", entry)
+	}
+}
+
 func TestUnzipExtractsNextToTheArchive(t *testing.T) {
 	root := t.TempDir()
 	public := filepath.Join(root, "public")
