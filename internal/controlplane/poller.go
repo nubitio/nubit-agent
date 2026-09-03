@@ -7,6 +7,10 @@ import (
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/command"
+	"github.com/nubitio/nubit-agent/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Executor is the subset of command.Executor the poller needs — narrowed so
@@ -77,6 +81,9 @@ func Poll(ctx context.Context, client *Client, executor Executor, outbox Outbox,
 }
 
 func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Outbox) {
+	ctx, span := telemetry.Tracer().Start(ctx, "agent.poll")
+	defer span.End()
+
 	if !flushOutbox(ctx, client, outbox) {
 		return
 	}
@@ -84,8 +91,14 @@ func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Out
 	commands, err := client.FetchJobs(ctx)
 	if err != nil {
 		log.Printf("nubit-agent: fetch jobs failed: %v", err)
+		telemetry.MarkError(span, err)
 		return
 	}
+	if len(commands) > 0 {
+		log.Printf("nubit-agent: fetched %d command(s)", len(commands))
+	}
+	span.SetAttributes(attribute.Int("nubit.agent.commands", len(commands)))
+	telemetry.RecordPoll(ctx, len(commands))
 
 	for _, cmd := range commands {
 		if !executeAndReport(ctx, client, executor, outbox, cmd) {
@@ -95,12 +108,27 @@ func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Out
 }
 
 func executeAndReport(ctx context.Context, client *Client, executor Executor, outbox Outbox, cmd command.Command) bool {
+	ctx, span := telemetry.Tracer().Start(ctx, "agent.command", trace.WithAttributes(
+		attribute.String("nubit.command.type", cmd.Type),
+		attribute.String("nubit.command.id", cmd.ID),
+	))
+	defer span.End()
+	log.Printf("nubit-agent: executing %s id=%s", cmd.Type, cmd.ID)
+
 	result, execErr := executor.Execute(cmd)
+	if command.SystemReset == cmd.Type && execErr == nil {
+		if clearer, ok := outbox.(interface{ Reset() error }); ok {
+			_ = clearer.Reset()
+		}
+	}
 
 	status := result.Status
 	if execErr != nil {
 		status = "failed"
+		telemetry.MarkError(span, execErr)
 	}
+	span.SetAttributes(attribute.String("nubit.command.status", status))
+	telemetry.RecordCommand(ctx, cmd.Type, status)
 
 	pending := PendingResult{CommandID: cmd.ID, Status: status, Output: result.Output}
 	if execErr != nil {

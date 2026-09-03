@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/command"
+	"github.com/nubitio/nubit-agent/internal/telemetry"
 )
 
 type Client struct {
@@ -88,6 +89,17 @@ func (client *Client) attachMTLSTransport() {
 	client.HTTPClient.Transport = transport
 }
 
+func (client *Client) do(request *http.Request) (*http.Response, error) {
+	httpClient := client.HTTPClient
+	if telemetry.Enabled() {
+		cloned := *httpClient
+		cloned.Transport = telemetry.WrapTransport(httpClient.Transport)
+		httpClient = &cloned
+	}
+
+	return httpClient.Do(request)
+}
+
 func (client *Client) authenticate(request *http.Request) {
 	if client.Token != "" {
 		request.Header.Set("X-Agent-Token", client.Token)
@@ -128,7 +140,7 @@ func (client *Client) FetchJobs(ctx context.Context) ([]command.Command, error) 
 	}
 	client.authenticate(request)
 
-	response, err := client.HTTPClient.Do(request)
+	response, err := client.do(request)
 	if err != nil {
 		return nil, fmt.Errorf("fetch jobs: %w", err)
 	}
@@ -183,7 +195,7 @@ func (client *Client) ReportPending(ctx context.Context, pending PendingResult) 
 	request.Header.Set("Content-Type", "application/json")
 	client.authenticate(request)
 
-	response, err := client.HTTPClient.Do(request)
+	response, err := client.do(request)
 	if err != nil {
 		return fmt.Errorf("report result: %w", err)
 	}
@@ -210,7 +222,7 @@ func (client *Client) PublishInventory(ctx context.Context, inventory any) error
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client.authenticate(request)
-	response, err := client.HTTPClient.Do(request)
+	response, err := client.do(request)
 	if err != nil {
 		return fmt.Errorf("publish inventory: %w", err)
 	}

@@ -5,13 +5,14 @@ server. It is not a remote shell and does not execute arbitrary user input.
 
 The confirmed MVP operating baseline is recorded in
 [`docs/adr/ADR-001-mvp-hosting-platform-baseline.md`](docs/adr/ADR-001-mvp-hosting-platform-baseline.md).
-For the current MVP, Debian 12 and Ubuntu 26.04 on amd64 are the supported
-web-profile platforms. Ubuntu 26.04 amd64 support includes operator-external
-evidence: the operator ran `scripts/test-installer-ubuntu2604-systemd.sh
+For the current MVP, Debian 12 and Ubuntu 26.04 on amd64 and arm64 are
+supported web-profile platforms. amd64 is the reference path: Ubuntu 26.04
+amd64 support includes operator-external evidence that the operator ran
+`scripts/test-installer-ubuntu2604-systemd.sh
 --version <tag>` on a real Ubuntu 26.04 amd64 VM and confirmed OK; no local
 artifact is present in this repository. linux/arm64 on the same distros is
-accepted by the installer with a mileage warning; it has not had the equivalent
-operator-external real-VM validation. See
+supported with a mileage warning; it has not had equivalent operator-external
+real-VM validation. See
 [`docs/adr/ADR-002-mvp-platform-validation.md`](docs/adr/ADR-002-mvp-platform-validation.md)
 and
 [`docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md`](docs/adr/ADR-003-ubuntu-2604-amd64-operator-validation.md).
@@ -45,7 +46,7 @@ Agent-supported command families known in this codebase are:
 
 ## Install
 
-For a supported Debian 12 or Ubuntu 26.04 amd64 server, run as root:
+For a supported Debian 12 or Ubuntu 26.04 amd64 or arm64 server, run as root:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/install.sh | sh
@@ -85,6 +86,9 @@ then run `nubit-agent enroll --token <token>` (or install with
 
 `--dry-run` prints every action without touching the machine, and `--version
 <tag>` pins a specific release. Re-running the installer upgrades in place.
+
+OpenTelemetry traces and metrics are opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT`.
+See [`docs/observability.md`](docs/observability.md).
 
 Every download is verified against the `SHA256SUMS` published with the release
 before anything is written.
@@ -165,14 +169,15 @@ an enrolled Agent can poll successfully.
 - Privileged hosting operations are added one command type at a time with payload
   validation, tests, least privilege, and rollback behavior.
 
-## Debian 12 and Ubuntu 26.04 amd64 web-profile support
+## Debian 12 and Ubuntu 26.04 web-profile support
 
-The web-profile is supported on Debian 12 amd64 and Ubuntu 26.04 amd64, with Caddy,
-PHP-FPM, MariaDB, and native SFTP through OpenSSH. `--database postgres` installs
-PostgreSQL instead. Ubuntu 26.04 amd64 has an
-operator-external real-VM systemd validation confirmation and no local artifact
-in this repository. linux/arm64 hosts (same distros, same sury.org packages) are
-accepted with a warning; they lack that operator-external real-VM validation.
+The web-profile is supported on Debian 12 and Ubuntu 26.04 on amd64 and arm64,
+with Caddy, PHP-FPM, MariaDB, and native SFTP through OpenSSH. `--database
+postgres` installs PostgreSQL instead. Ubuntu 26.04 amd64 is the reference
+path and has an operator-external real-VM systemd validation confirmation; no
+local artifact is in this repository. linux/arm64 hosts use the same distros,
+Sury packages, and released binary, but carry a mileage warning because they
+lack that equivalent operator-external real-VM validation.
 Review the installation actions before running them:
 
 ```bash

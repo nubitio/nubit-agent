@@ -14,7 +14,8 @@ T01 without presenting partial or future capabilities as operational.
 
 ## Drivers
 
-- Keep MVP support claims limited to confirmed platforms.
+- Keep MVP support claims aligned with the implemented architecture boundary
+  and its validation maturity.
 - Document the operational token-based Agent transport that works with current
   Control.
 - Separate implemented local/partial backup behavior from the approved S3
@@ -24,9 +25,9 @@ T01 without presenting partial or future capabilities as operational.
 
 ## Options
 
-1. Document the current MVP as Debian 12 and Ubuntu 26.04 amd64 only, using
-   `NUBIT_AGENT_TOKEN` in `X-Agent-Token`; mark enrollment/mTLS and S3 backup
-   convergence as pending.
+1. Document the current MVP as Debian 12 and Ubuntu 26.04 on amd64 and arm64,
+   using `NUBIT_AGENT_TOKEN` in `X-Agent-Token`; identify amd64 as the
+   real-VM-validated reference path and mark S3 backup convergence as pending.
 2. Present enrollment/mTLS as the MVP installation path.
 3. Present all Agent command handlers, including local backups, as sellable MVP
    features.
@@ -35,8 +36,9 @@ T01 without presenting partial or future capabilities as operational.
 
 **Given choice:** adopt option 1.
 
-Debian 12 and Ubuntu 26.04 are supported only on amd64 for the MVP web profile;
-arm64 is outside the MVP. The operational MVP transport uses
+Debian 12 and Ubuntu 26.04 are supported on amd64 and arm64 for the MVP web
+profile. amd64 is the real-VM-validated reference path; arm64 is supported with
+lower field maturity and lacks equivalent real-VM evidence. The operational MVP transport uses
 `NUBIT_AGENT_TOKEN` sent as `X-Agent-Token`. `--enrollment-token`,
 `NUBIT_AGENT_ENROLLMENT_TOKEN`, and mTLS are partial/future work and are not
 usable against current Control because `POST /api/agent/enroll` is missing; using
@@ -49,17 +51,19 @@ is pending and must not be sold as complete.
 
 ## Rationale
 
-The confirmed grilling decisions explicitly limit the MVP to amd64 on Debian 12
-and Ubuntu 26.04, confirm the temporary token transport, reject arm64 from the
-MVP, and require backup documentation to distinguish local implementation from
-the approved S3/tiered recovery commitment.
+The Agent ships verified binaries for amd64 and arm64 and the installer accepts
+both on the supported distros. The confirmed real-VM validation is amd64-only,
+so the documentation must preserve that confidence distinction while confirming
+arm64 support and require backup documentation to distinguish local
+implementation from the approved S3/tiered recovery commitment.
 
 ## Consequences
 
 **Positive**
 
 - Operators have a documented installation path that works with current Control.
-- MVP claims avoid arm64, mTLS enrollment, and backup-sales overstatement.
+- MVP claims distinguish arm64 support from amd64's stronger validation,
+  alongside mTLS and backup-sales boundaries.
 - Command documentation can expose known Agent handlers while retaining Control
   and lifecycle readiness boundaries.
 

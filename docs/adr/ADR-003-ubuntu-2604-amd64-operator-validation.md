@@ -25,8 +25,9 @@ The environment was a real Ubuntu 26.04 amd64 VM.
 
 ## Options
 
-1. Treat Ubuntu 26.04 amd64 as supported for the MVP after the operator-external
-   real VM systemd validation; keep Ubuntu arm64 unsupported.
+1. Treat Ubuntu 26.04 amd64 as the supported reference path after the
+   operator-external real VM systemd validation; support arm64 with a clear
+   lower-maturity caveat.
 2. Keep Ubuntu 26.04 unsupported until a local validation artifact is committed.
 3. Treat all Ubuntu 26.04 architectures as supported based on the amd64 run.
 
@@ -34,8 +35,10 @@ The environment was a real Ubuntu 26.04 amd64 VM.
 
 **Given choice:** adopt option 1.
 
-Debian 12 remains supported. Ubuntu 26.04 is supported only on amd64 for the
-MVP. Ubuntu arm64 is not supported.
+Debian 12 and Ubuntu 26.04 are supported on amd64 and arm64 for the MVP. amd64
+is the reference path because it has operator-external real-VM systemd evidence.
+arm64 is supported by the released binary and installer, but lacks equivalent
+real-VM evidence and is therefore lower maturity.
 
 ## Rationale
 
@@ -49,13 +52,12 @@ operator-external rather than repository-local.
 
 **Positive**
 
-- MVP documentation can state Debian 12 and Ubuntu 26.04 amd64 support.
-- Ubuntu architecture support remains limited to the architecture that was
-  externally validated.
+- MVP documentation can state Debian 12 and Ubuntu 26.04 support on amd64 and
+  arm64 while identifying amd64 as the validated reference path.
 
 **Negative / pending**
 
-- Ubuntu arm64 remains unsupported until separate validation is executed and
-  recorded.
+- Ubuntu arm64 needs separate real-VM validation to reach amd64's confidence
+  level.
 - The Ubuntu 26.04 amd64 evidence is operator-external unless a local artifact is
   added later.

@@ -46,6 +46,20 @@ func parseLogs(payload json.RawMessage) (LogsPayload, error) {
 	return request, nil
 }
 
+func parseSystemReset(payload json.RawMessage) (bool, error) {
+	var request struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return false, err
+	}
+	if !request.Confirm {
+		return false, errors.New("system reset requires explicit confirmation")
+	}
+
+	return true, nil
+}
+
 func parseBackupRestore(payload json.RawMessage) (BackupRestorePayload, error) {
 	var request BackupRestorePayload
 	if err := json.Unmarshal(payload, &request); err != nil {

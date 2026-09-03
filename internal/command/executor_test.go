@@ -66,6 +66,10 @@ func (fakeSiteProvisioner) Reconcile() ([]site.Drift, error) {
 	return []site.Drift{{SiteID: "example.com", Resource: "phpConfig", Expected: "present", Actual: "missing"}}, nil
 }
 
+func (fakeSiteProvisioner) Reset() (site.ResetResult, error) {
+	return site.ResetResult{Deleted: []string{"example.com"}}, nil
+}
+
 type fakeFilesProvisioner struct{}
 
 func (fakeFilesProvisioner) List(siteID, rel string) (files.ListResult, error) {
@@ -96,6 +100,21 @@ func TestExecutorListsSiteFiles(t *testing.T) {
 	}
 	if 1 != len(listed.Entries) || "index.html" != listed.Entries[0].Name {
 		t.Fatalf("unexpected list: %#v", listed)
+	}
+}
+
+func TestExecutorResetsEverySite(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
+	result, err := executor.Execute(Command{ID: "cmd_reset", Type: SystemReset, Version: 1, IdempotencyKey: "system:reset", Payload: []byte(`{"confirm":true}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output site.ResetResult
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if 1 != len(output.Deleted) || "example.com" != output.Deleted[0] {
+		t.Fatalf("unexpected reset: %#v", output)
 	}
 }
 

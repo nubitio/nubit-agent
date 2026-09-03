@@ -55,6 +55,14 @@ func (store *FileStore) Save(key string, result Result) error {
 	return nil
 }
 
+func (store *FileStore) Reset() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.results = map[string]Result{}
+
+	return store.persist()
+}
+
 func (store *FileStore) persist() error {
 	if err := os.MkdirAll(filepath.Dir(store.path), 0o700); err != nil {
 		return err

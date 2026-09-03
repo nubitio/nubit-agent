@@ -14,13 +14,15 @@ or distribution targets.
 ## Drivers
 
 - Make the supported MVP platform unambiguous.
-- Avoid presenting an unvalidated platform or architecture as supported.
-- Preserve Ubuntu 26.04 arm64 as a future target without asserting readiness.
+- Distinguish the reference validation path from supported architectures with
+  different validation maturity.
+- Support Ubuntu 26.04 arm64 without asserting equivalent real-VM validation.
 
 ## Options
 
-1. Support Debian 12 and Ubuntu 26.04 amd64 after equivalent installer and
-   systemd validation is recorded; keep Ubuntu 26.04 arm64 unsupported.
+1. Support Debian 12 and Ubuntu 26.04 on amd64 and arm64; treat amd64 as the
+   reference path after installer and systemd validation is recorded, and
+   document arm64's lower field maturity.
 2. Support Debian 12 only until all Ubuntu architectures receive validation.
 3. Support Debian 12 and Ubuntu 26.04 on all architectures before equivalent
    validation is recorded.
@@ -29,15 +31,17 @@ or distribution targets.
 
 **Given choice:** adopt option 1.
 
-Debian 12 remains supported. Ubuntu 26.04 support is limited to linux/amd64 for
-the MVP. Ubuntu 26.04 arm64 is not supported by the installer until a separate
-real validation run is recorded.
+Debian 12 and Ubuntu 26.04 are supported on linux/amd64 and linux/arm64 for the
+MVP. amd64 is the reference path with recorded installer and systemd validation.
+arm64 is supported by released binaries, installer coverage, and CI, but does
+not yet have an equivalent real systemd validation run.
 
 ## Rationale
 
-The confirmed review decision authorizes Ubuntu 26.04 support only for amd64
-and requires real validation in an environment with systemd before declaring
-that support. The installer also hardens Sury repository setup by verifying the
+The installer ships and verifies binaries for both architectures, uses the same
+Sury repository setup for both, and CI covers cross-builds plus arm64 installer
+acceptance. The real systemd validation remains the higher-confidence amd64
+reference. The installer also hardens Sury repository setup by verifying the
 archive-key fingerprint and pinning packages.sury.org to the PHP package scope.
 
 ## Consequences
@@ -48,5 +52,5 @@ archive-key fingerprint and pinning packages.sury.org to the PHP package scope.
 
 **Negative / pending**
 
-- Ubuntu 26.04 arm64 integration validation must be executed and recorded before
-  it can become supported.
+- Ubuntu 26.04 arm64 still needs equivalent real-systemd validation to reach
+  amd64's confidence level.

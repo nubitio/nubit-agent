@@ -380,6 +380,49 @@ func (p Provisioner) Delete(siteID string, confirmed bool) (result DeleteResult,
 	return DeleteResult{SiteID: siteID, Status: "deleted", RecoveryDir: recoveryDir}, nil
 }
 
+type ResetResult struct {
+	Deleted []string `json:"deleted"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
+// Reset force-removes every site this node created. Used by Control's
+// app:reset during live tests so the VPS does not have to be rebuilt.
+// Individual failures are reported; the rest still come down.
+func (p Provisioner) Reset() (ResetResult, error) {
+	result := ResetResult{}
+	if p.Store == nil {
+		return result, errors.New("site state store is required")
+	}
+	for _, state := range p.Store.List() {
+		if err := p.forceRemove(state); err != nil {
+			result.Errors = append(result.Errors, state.SiteID+": "+err.Error())
+			continue
+		}
+		result.Deleted = append(result.Deleted, state.SiteID)
+	}
+
+	return result, nil
+}
+
+func (p Provisioner) forceRemove(state State) error {
+	layout := p.layoutFor(state.PHPVersion)
+	siteRoot := filepath.Dir(state.DocumentRoot)
+	for _, path := range []string{
+		filepath.Join(layout.CaddyConfigDir, state.Domain+".caddy"),
+		filepath.Join(layout.CaddyDisabledDir, state.Domain+".caddy"),
+		filepath.Join(layout.PHPConfigDir, state.SystemUser+".conf"),
+	} {
+		_ = os.Remove(path)
+	}
+	if p.Runner != nil {
+		_ = p.Runner.Run("systemctl", "reload", "php"+state.PHPVersion+"-fpm")
+		_ = p.Runner.Run("userdel", "--remove", state.SystemUser)
+	}
+	_ = os.RemoveAll(siteRoot)
+
+	return p.Store.Delete(state.SiteID)
+}
+
 func (p Provisioner) setSiteStatus(siteID, target string) (LifecycleResult, error) {
 	if p.Runner == nil || p.Store == nil {
 		return LifecycleResult{}, errors.New("site provisioner runner and state store are required")

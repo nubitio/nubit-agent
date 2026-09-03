@@ -8,14 +8,14 @@ Control decides and audits; the Agent applies a closed, versioned command set.
 
 ## Supported baseline
 
-Debian 12 amd64 and Ubuntu 26.04 amd64 are the supported platforms for the current MVP
-web profile: Caddy, PHP-FPM, MariaDB (PostgreSQL on request), OpenSSH/SFTP,
-and ACME TLS. Ubuntu
-26.04 amd64 support includes operator-external evidence: the operator ran
+Debian 12 and Ubuntu 26.04 on amd64 and arm64 are supported platforms for the
+current MVP web profile: Caddy, PHP-FPM, MariaDB (PostgreSQL on request),
+OpenSSH/SFTP, and ACME TLS. Ubuntu 26.04 amd64 is the reference path and has
+operator-external evidence: the operator ran
 `scripts/test-installer-ubuntu2604-systemd.sh --version <tag>` on a real Ubuntu
 26.04 amd64 VM and confirmed OK; no local artifact is present in this
-repository. linux/arm64 on the same distros is accepted by the installer with a
-mileage warning (same sury.org repo, arm64 binary) but has not had the
+repository. linux/arm64 on the same distros is supported with a mileage warning
+(same sury.org repo, arm64 binary) but has not had the
 equivalent operator-external real-VM systemd validation. The MVP platform choices, including DNS, certificate, S3
 backup storage, and Stalwart mailbox boundaries, are recorded in
 [`adr/ADR-001-mvp-hosting-platform-baseline.md`](adr/ADR-001-mvp-hosting-platform-baseline.md)
@@ -222,9 +222,9 @@ sh -n scripts/install.sh
 ```
 
 Run integration tests in an isolated Debian 12 container before enabling a
-command on a real server. For Ubuntu 26.04, the supported MVP boundary is amd64
-only and requires both the container installer smoke test and the real
-systemd-based validation script to pass; the current amd64 systemd evidence is
-operator-external with no local artifact. Debian/Ubuntu arm64 is installable
-(the installer accepts it with a warning) but must not be represented as having
-the equivalent operator-external real-VM validation until such a run is recorded.
+command on a real server. For Ubuntu 26.04, amd64 is the reference path and
+requires both the container installer smoke test and the real systemd-based
+validation script to pass; the current amd64 systemd evidence is
+operator-external with no local artifact. Debian/Ubuntu arm64 is supported with
+a mileage warning but must not be represented as having equivalent
+operator-external real-VM validation until such a run is recorded.

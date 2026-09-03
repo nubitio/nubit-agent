@@ -574,6 +574,24 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 			return Result{}, reconcileErr
 		}
 		output, err = json.Marshal(map[string]any{"drifts": drifts})
+	case SystemReset:
+		if _, parseErr := parseSystemReset(command.Payload); parseErr != nil {
+			return Result{}, parseErr
+		}
+		resetter, ok := executor.sites.(interface {
+			Reset() (site.ResetResult, error)
+		})
+		if !ok {
+			return Result{}, errors.New("site provisioner cannot reset")
+		}
+		reset, resetErr := resetter.Reset()
+		if resetErr != nil {
+			return Result{}, resetErr
+		}
+		if clearer, hasClear := executor.store.(interface{ Reset() error }); hasClear {
+			_ = clearer.Reset()
+		}
+		output, err = json.Marshal(reset)
 	case SFTPCreate, SFTPUpdateKey, SFTPRevoke:
 		request, parseErr := parseSFTP(command.Payload, command.Type != SFTPRevoke)
 		if parseErr != nil {

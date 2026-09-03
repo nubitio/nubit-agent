@@ -29,6 +29,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/objectstore"
 	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
+	"github.com/nubitio/nubit-agent/internal/telemetry"
 	"github.com/nubitio/nubit-agent/internal/tls"
 	"github.com/nubitio/nubit-agent/internal/version"
 )
@@ -125,6 +126,19 @@ func main() {
 	defer stop()
 
 	log.Printf("nubit-agent %s starting", version.Version)
+
+	shutdownTelemetry, err := telemetry.Start(ctx)
+	if err != nil {
+		log.Printf("nubit-agent: telemetry disabled: %v", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := shutdownTelemetry(flushCtx); shutdownErr != nil {
+			log.Printf("nubit-agent: telemetry shutdown: %v", shutdownErr)
+		}
+	}()
 
 	updater := startSelfUpdate(ctx)
 	if client := startPolling(ctx, executor, outbox, updater, stop); client != nil {

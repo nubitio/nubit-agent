@@ -87,6 +87,14 @@ func (outbox *FileOutbox) List() []PendingResult {
 	return results
 }
 
+func (outbox *FileOutbox) Reset() error {
+	outbox.mu.Lock()
+	defer outbox.mu.Unlock()
+	outbox.pending = map[string]PendingResult{}
+
+	return outbox.persist()
+}
+
 func (outbox *FileOutbox) Delete(commandID string) error {
 	outbox.mu.Lock()
 	defer outbox.mu.Unlock()

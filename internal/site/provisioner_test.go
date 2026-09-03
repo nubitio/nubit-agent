@@ -302,6 +302,38 @@ func TestAddAndRemoveDomainUpdatesCaddyAndState(t *testing.T) {
 	}
 }
 
+func TestResetForceRemovesEverySite(t *testing.T) {
+	base := t.TempDir()
+	store := NewMemoryStateStore()
+	_ = store.Save(State{
+		SiteID: "a.example", Domain: "a.example", SystemUser: "aweb", PHPVersion: "8.4",
+		DocumentRoot: filepath.Join(base, "sites", "a.example", "public"), Status: "active",
+	})
+	_ = store.Save(State{
+		SiteID: "b.example", Domain: "b.example", SystemUser: "bweb", PHPVersion: "8.4",
+		DocumentRoot: filepath.Join(base, "sites", "b.example", "public"), Status: "suspended",
+	})
+	provisioner := Provisioner{
+		Runner: &fakeRunner{},
+		Store:  store,
+		Layout: Layout{
+			SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"),
+			CaddyDisabledDir: filepath.Join(base, "caddy-off"), PHPConfigDir: filepath.Join(base, "php"),
+		},
+	}
+
+	result, err := provisioner.Reset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if 0 != len(store.List()) {
+		t.Fatalf("expected no sites left, got %d", len(store.List()))
+	}
+	if 2 != len(result.Deleted) {
+		t.Fatalf("expected two deleted sites, got %#v", result)
+	}
+}
+
 func TestDeleteRequiresSuspensionAndArchivesSite(t *testing.T) {
 	base := t.TempDir()
 	layout := Layout{
