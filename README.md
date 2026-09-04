@@ -41,7 +41,7 @@ Agent-supported command families known in this codebase are:
 | files | `site.files.list`, `site.files.mkdir`, `site.files.write`, `site.files.read`, `site.files.delete`, `site.files.unzip`, `site.files.rename` | Supported by Agent and exposed through portal file operations; validate operational policy before broad enablement. |
 | cron | `site.cron.list`, `site.cron.replace` | Supported by Agent; lifecycle/control policy remains pending. |
 | logs | `site.logs.read` | Supported by Agent; operational exposure policy remains pending. |
-| backup | `site.backup.list`, `site.backup.create`, `site.backup.restore` | Agent currently performs local `.tar.gz` archives with fixed retention. This is not the approved sellable MVP backup product; S3 + tiers/RPO/RTO convergence is pending. |
+| backup | `site.backup.list`, `site.backup.create`, `site.backup.restore`, `site.backup.verify` | S3 object storage. `site.backup.create` honours the plan's `retentionDays` (falls back to "7 newest" when absent). `site.backup.verify` extracts the newest archive to a scratch dir to prove it is recoverable, without touching the live site. The per-plan *cadence* and the RPO/RTO scheduler live in nubit-control. |
 | mail | `mail.domain.create`, `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`, `mail.mailbox.set-quota`, `mail.mailbox.delete`, `mail.inventory` | Agent capability exists when mail is configured; complete Control lifecycle and mailbox restore automation remain pending. |
 
 ## Install
@@ -225,7 +225,18 @@ in production; `NUBIT_BACKUP_S3_FORCE_PATH_STYLE=1` for MinIO). Each archive is 
 gzip tarball with `files/` (the document root), `databases/<db>.sql` (a
 `mariadb-dump` per site database) and `manifest.json`. `Restore` rewrites the
 files (chowned to the site's Unix user) and re-imports the dumps through
-`mariadb`. Prune keeps the newest seven per site. There is **no local copy**.
-Still pending for the ADR-001 product: a scheduler for the Basic/Business/Premium
-cadence and enforcement of the per-tier retention / RPO / RTO. Backups today are
-operator/customer-initiated through the portal.
+`mariadb`. There is **no local copy**.
+
+`site.backup.create` accepts `retentionDays` (from the plan tier — ADR-001:
+7 / 30 / 30): prune keeps every archive inside that window and, below it, the
+seven newest as a floor; with no `retentionDays` it keeps the seven newest only.
+`site.backup.verify` downloads the newest archive and extracts it to a throwaway
+directory, checking the manifest and counting recoverable files / dumps — it
+never writes to the document root or runs `mariadb`. It reports
+`{verified, durationSeconds, files, databases}`; a structurally bad archive is
+`verified:false` with a reason, not an error.
+
+Still pending for the ADR-001 product: the per-plan backup **cadence** and the
+RPO/RTO scheduler — those live in nubit-control, which now queues
+`site.backup.create` on the policy cadence and `site.backup.verify` on the
+rehearsal interval.

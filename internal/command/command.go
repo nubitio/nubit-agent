@@ -59,6 +59,12 @@ const SiteCronReplace = "site.cron.replace"
 const SiteBackupList = "site.backup.list"
 const SiteBackupCreate = "site.backup.create"
 const SiteBackupRestore = "site.backup.restore"
+
+// SiteBackupVerify downloads the newest archive and extracts it to a scratch
+// directory to prove it is recoverable, without touching the live site. It is
+// the agent side of Control's restore-rehearsal scheduler (nubit-control
+// ADR-001 §RPO/RTO).
+const SiteBackupVerify = "site.backup.verify"
 const MailDomainCreate = "mail.domain.create"
 const MailDomainDelete = "mail.domain.delete"
 const MailMailboxCreate = "mail.mailbox.create"

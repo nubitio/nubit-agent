@@ -24,6 +24,13 @@ type BackupRestorePayload struct {
 	Confirm bool   `json:"confirm"`
 }
 
+// BackupCreatePayload carries the plan's retention window (ADR-001 tiers). A
+// control plane that says nothing keeps the legacy "7 newest" pruning.
+type BackupCreatePayload struct {
+	SiteID        string `json:"siteId"`
+	RetentionDays int    `json:"retentionDays"`
+}
+
 func parseCronReplace(payload json.RawMessage) (CronReplacePayload, error) {
 	var request CronReplacePayload
 	if err := json.Unmarshal(payload, &request); err != nil {
@@ -67,6 +74,20 @@ func parseBackupRestore(payload json.RawMessage) (BackupRestorePayload, error) {
 	}
 	if !domainName.MatchString(request.SiteID) || request.Name == "" {
 		return request, errors.New("backup payload is invalid")
+	}
+	return request, nil
+}
+
+func parseBackupCreate(payload json.RawMessage) (BackupCreatePayload, error) {
+	var request BackupCreatePayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return request, err
+	}
+	if !domainName.MatchString(request.SiteID) {
+		return request, errors.New("site id is invalid")
+	}
+	if request.RetentionDays < 0 {
+		request.RetentionDays = 0
 	}
 	return request, nil
 }

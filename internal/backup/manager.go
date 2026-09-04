@@ -28,6 +28,18 @@ type Archive struct {
 	CreatedAt string `json:"createdAt"`
 }
 
+// VerifyResult is what site.backup.verify reports back to Control (folded onto
+// the Service by RecordBackupOutcome). A structurally bad archive is
+// Verified:false with a Reason, never an error — a failed rehearsal is data.
+type VerifyResult struct {
+	Verified        bool   `json:"verified"`
+	DurationSeconds int    `json:"durationSeconds"`
+	Files           int    `json:"files"`
+	Databases       int    `json:"databases"`
+	Archive         string `json:"archive"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 // BlobStore is the subset of object storage the manager needs.
 // *objectstore.Store satisfies it; tests substitute an in-memory fake.
 type BlobStore interface {
@@ -49,7 +61,11 @@ const (
 	filesPrefix    = "files/"
 	databasePrefix = "databases/"
 	manifestName   = "manifest.json"
-	keepArchives   = 7
+	// keepArchives is the floor: prune never drops a site below this many
+	// archives, even when a short retention window would. It is also the exact
+	// behaviour when the plan supplies no retentionDays.
+	keepArchives  = 7
+	archiveLayout = "20060102T150405Z"
 )
 
 // Manager creates, lists and restores per-site backups. Every archive is a
@@ -96,7 +112,10 @@ func (manager Manager) List(siteID string) ([]Archive, error) {
 	return archives, nil
 }
 
-func (manager Manager) Create(siteID string) (Archive, error) {
+// Create writes a new archive and prunes old ones. retentionDays comes from
+// the plan (ADR-001 tiers: 7 / 30 / 30); 0 keeps the legacy "7 newest only"
+// behaviour.
+func (manager Manager) Create(siteID string, retentionDays int) (Archive, error) {
 	state, err := manager.site(siteID)
 	if err != nil {
 		return Archive{}, err
@@ -142,7 +161,7 @@ func (manager Manager) Create(siteID string) (Archive, error) {
 	if info != nil {
 		bytes = info.Size()
 	}
-	manager.prune(siteID)
+	manager.prune(siteID, retentionDays, now)
 	return Archive{Name: name, Bytes: bytes, CreatedAt: now.Format(time.RFC3339)}, nil
 }
 
@@ -304,6 +323,132 @@ func (manager Manager) Restore(siteID, name string, confirmed bool) error {
 	err = manager.applyArchive(tmp, state)
 	_ = tmp.Close()
 	return err
+}
+
+// Verify downloads the newest archive and extracts it to a throwaway directory
+// to prove it is recoverable — it never touches the live document root or
+// MariaDB. It is the agent side of Control's restore-rehearsal scheduler.
+func (manager Manager) Verify(siteID string) (VerifyResult, error) {
+	state, err := manager.site(siteID)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	if manager.Blobs == nil {
+		return VerifyResult{}, errors.New("backup storage is not configured")
+	}
+	archives, err := manager.List(siteID)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	if len(archives) == 0 {
+		return VerifyResult{}, errors.New("no backups to verify")
+	}
+	newest := archives[0].Name
+
+	start := time.Now()
+	if err := os.MkdirAll(manager.tempDir(), 0o700); err != nil {
+		return VerifyResult{}, err
+	}
+	tmp, err := os.CreateTemp(manager.tempDir(), "verify-*.tar.gz")
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	reader, err := manager.Blobs.Get(context.Background(), siteID+"/"+newest)
+	if err != nil {
+		_ = tmp.Close()
+		return VerifyResult{}, fmt.Errorf("download backup: %w", err)
+	}
+	_, copyErr := io.Copy(tmp, reader)
+	_ = reader.Close()
+	if copyErr != nil {
+		_ = tmp.Close()
+		return VerifyResult{}, copyErr
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		_ = tmp.Close()
+		return VerifyResult{}, err
+	}
+
+	scratch, err := os.MkdirTemp(manager.tempDir(), "verify-scratch-")
+	if err != nil {
+		_ = tmp.Close()
+		return VerifyResult{}, err
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+
+	result := manager.inspectArchive(tmp, scratch, state.SiteID)
+	_ = tmp.Close()
+	result.Archive = newest
+	result.DurationSeconds = int(time.Since(start).Round(time.Second) / time.Second)
+	return result, nil
+}
+
+// inspectArchive walks the tarball into scratch, counting recoverable content
+// and checking the manifest. A structural problem is a Verified:false result
+// with a Reason, not an error.
+func (manager Manager) inspectArchive(archive io.Reader, scratch, siteID string) VerifyResult {
+	gz, err := gzip.NewReader(archive)
+	if err != nil {
+		return VerifyResult{Reason: "archive is not valid gzip: " + err.Error()}
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	var files, databases int
+	manifestSeen := false
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return VerifyResult{Files: files, Databases: databases, Reason: "archive is truncated or corrupt: " + err.Error()}
+		}
+		switch {
+		case header.Name == manifestName:
+			manifestSeen = true
+			if err := manager.checkManifest(tr, siteID); err != nil {
+				return VerifyResult{Reason: err.Error()}
+			}
+		case strings.HasPrefix(header.Name, filesPrefix):
+			if header.Typeflag != tar.TypeReg {
+				continue
+			}
+			files++
+			rel := strings.TrimPrefix(header.Name, filesPrefix)
+			target, pathErr := restorePath(scratch, rel)
+			if pathErr != nil {
+				return VerifyResult{Files: files, Databases: databases, Reason: pathErr.Error()}
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return VerifyResult{Files: files, Databases: databases, Reason: err.Error()}
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if err != nil {
+				return VerifyResult{Files: files, Databases: databases, Reason: err.Error()}
+			}
+			_, copyErr := io.Copy(out, tr)
+			_ = out.Close()
+			if copyErr != nil {
+				return VerifyResult{Files: files, Databases: databases, Reason: "file extract failed: " + copyErr.Error()}
+			}
+		case strings.HasPrefix(header.Name, databasePrefix):
+			if header.Typeflag == tar.TypeReg {
+				databases++
+			}
+		}
+	}
+
+	if !manifestSeen {
+		return VerifyResult{Files: files, Databases: databases, Reason: "archive has no manifest.json"}
+	}
+	if files == 0 && databases == 0 {
+		return VerifyResult{Files: files, Databases: databases, Reason: "archive has no files and no database dumps"}
+	}
+	return VerifyResult{Verified: true, Files: files, Databases: databases}
 }
 
 func (manager Manager) applyArchive(archive io.Reader, state site.State) error {
@@ -510,12 +655,32 @@ func (manager Manager) restoreBin() string {
 	return "mariadb"
 }
 
-func (manager Manager) prune(siteID string) {
+// prune keeps every archive inside the retention window and, below that, the
+// keepArchives newest. With retentionDays <= 0 it falls back to "keepArchives
+// newest only", which is what every site got before plans set retention.
+func (manager Manager) prune(siteID string, retentionDays int, now time.Time) {
 	archives, err := manager.List(siteID)
 	if err != nil || len(archives) <= keepArchives {
 		return
 	}
+	var cutoff time.Time
+	if retentionDays > 0 {
+		cutoff = now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	}
 	for _, archive := range archives[keepArchives:] {
+		if retentionDays > 0 && archiveTime(archive.Name).After(cutoff) {
+			continue
+		}
 		_ = manager.Blobs.Delete(context.Background(), siteID+"/"+archive.Name)
 	}
+}
+
+// archiveTime parses the "20060102T150405Z" prefix an archive name carries.
+// A name that does not parse sorts as the zero time, i.e. always prunable.
+func archiveTime(name string) time.Time {
+	parsed, err := time.Parse(archiveLayout, strings.TrimSuffix(name, ".tar.gz"))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

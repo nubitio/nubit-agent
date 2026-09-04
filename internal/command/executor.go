@@ -169,8 +169,9 @@ type LogProvisioner interface {
 
 type BackupProvisioner interface {
 	List(siteID string) ([]backup.Archive, error)
-	Create(siteID string) (backup.Archive, error)
+	Create(siteID string, retentionDays int) (backup.Archive, error)
 	Restore(siteID, name string, confirmed bool) error
+	Verify(siteID string) (backup.VerifyResult, error)
 }
 
 func NewExecutor(store Store, services ...any) *Executor {
@@ -769,6 +770,19 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 		}
 		output, err = json.Marshal(map[string]any{"archives": archives})
 	case SiteBackupCreate:
+		request, parseErr := parseBackupCreate(command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.backups == nil {
+			return Result{}, errors.New("backup manager is not configured")
+		}
+		archive, backupErr := executor.backups.Create(request.SiteID, request.RetentionDays)
+		if backupErr != nil {
+			return Result{}, backupErr
+		}
+		output, err = json.Marshal(archive)
+	case SiteBackupVerify:
 		request, parseErr := parseSiteInspect(command.Payload)
 		if parseErr != nil {
 			return Result{}, parseErr
@@ -776,11 +790,11 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 		if executor.backups == nil {
 			return Result{}, errors.New("backup manager is not configured")
 		}
-		archive, backupErr := executor.backups.Create(request.SiteID)
+		verified, backupErr := executor.backups.Verify(request.SiteID)
 		if backupErr != nil {
 			return Result{}, backupErr
 		}
-		output, err = json.Marshal(archive)
+		output, err = json.Marshal(verified)
 	case SiteBackupRestore:
 		request, parseErr := parseBackupRestore(command.Payload)
 		if parseErr != nil {
@@ -823,7 +837,8 @@ func isSiteFilesCommand(commandType string) bool {
 	switch commandType {
 	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete,
 		SiteFilesUnzip, SiteFilesRename, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteCronReplace, SiteBackupList, SiteBackupCreate, SiteBackupRestore:
+		SiteCronList, SiteCronReplace, SiteBackupList, SiteBackupCreate, SiteBackupRestore,
+		SiteBackupVerify:
 		return true
 	default:
 		return false

@@ -195,9 +195,13 @@ future commands and must not be presented as available Agent operations.
 
 1. **Done:** backups converged onto S3 object storage (`NUBIT_BACKUP_S3_*`,
    MinIO/Wasabi). Archives carry the document root + a `mariadb-dump` per site
-   database; `Restore` rewrites files and re-imports the dumps. **Still pending
-   before sale:** the Basic/Business/Premium cadence scheduler, per-tier
-   retention/RPO/RTO enforcement, and restore rehearsals.
+   database; `Restore` rewrites files and re-imports the dumps.
+   `site.backup.create` now honours the plan's `retentionDays` (window + a
+   seven-newest floor), and `site.backup.verify` performs a scratch-dir restore
+   rehearsal reporting `{verified, durationSeconds, files, databases}`.
+   **Still pending before sale:** the Basic/Business/Premium cadence + RPO/RTO
+   scheduler — that is nubit-control's (`app:backups:run-due` /
+   `rehearse-restore` / `audit`), which drives both commands.
 2. **Done (Docker image):** the Agent bundles Stalwart and boots it unattended
    when `NUBIT_MAIL_API_SECRET` is set; portal covers domain/mailbox create +
    password/quota/delete. **Pending:** bare-metal `install.sh --profile web,mail`
