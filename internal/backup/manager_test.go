@@ -110,7 +110,7 @@ func TestCreateStoresFilesAndDumpsThenRestoreReverts(t *testing.T) {
 	manager, blobs := testManager(t, root, "example_db")
 	manager.RestoreBin = fakeRestoreBin(t, sink)
 
-	archive, err := manager.Create("example.pe")
+	archive, err := manager.Create("example.pe", 0)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestBackupCommandsRefusedWithoutStore(t *testing.T) {
 	_ = states.Save(site.State{SiteID: "example.pe", DocumentRoot: t.TempDir()})
 	manager := Manager{Sites: states}
 
-	if _, err := manager.Create("example.pe"); err == nil {
+	if _, err := manager.Create("example.pe", 0); err == nil {
 		t.Fatal("Create without a store should fail")
 	}
 	if _, err := manager.List("example.pe"); err == nil {
@@ -190,7 +190,7 @@ func TestCreateRefusesSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager, _ := testManager(t, root)
-	if _, err := manager.Create("example.pe"); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := manager.Create("example.pe", 0); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("Create error = %v, want symlink rejection", err)
 	}
 }
@@ -211,6 +211,95 @@ func TestRestoreRejectsTraversalAndSymlinkParents(t *testing.T) {
 	blobs.objects["example.pe/symlink.tar.gz"] = tarGz(t, filesPrefix+"linked/file.txt", "no")
 	if err := manager.Restore("example.pe", "symlink.tar.gz", true); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("Restore error = %v, want symlink rejection", err)
+	}
+}
+
+func TestPruneKeepsEveryArchiveInsideTheRetentionWindow(t *testing.T) {
+	manager, blobs := testManager(t, t.TempDir())
+	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	// One archive every 6 hours for 10 days: 40 archives, denser than the
+	// keepArchives floor, so a 7-day window must keep well more than 7.
+	for i := 0; i < 40; i++ {
+		name := now.Add(-time.Duration(i)*6*time.Hour).Format(archiveLayout) + ".tar.gz"
+		blobs.objects["example.pe/"+name] = []byte("x")
+	}
+
+	manager.prune("example.pe", 7, now)
+
+	remaining := keysOf(blobs)
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	if len(remaining) < 20 {
+		t.Fatalf("kept only %d archives; a 7-day window at 6h cadence should keep ~28", len(remaining))
+	}
+	for _, key := range remaining {
+		ts := archiveTime(filepath.Base(key))
+		if !ts.After(cutoff) {
+			// The only pre-window archive allowed to survive is one held by
+			// the keepArchives floor — impossible here, there are 28 inside.
+			t.Fatalf("kept an archive outside the retention window: %s", key)
+		}
+	}
+}
+
+func TestPruneFallsBackToCountWhenRetentionIsZero(t *testing.T) {
+	manager, blobs := testManager(t, t.TempDir())
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	for day := 0; day < 12; day++ {
+		name := now.AddDate(0, 0, -day).Format(archiveLayout) + ".tar.gz"
+		blobs.objects["example.pe/"+name] = []byte("x")
+	}
+
+	manager.prune("example.pe", 0, now)
+
+	if got := len(keysOf(blobs)); got != keepArchives {
+		t.Fatalf("kept %d archives, want %d (count-only fallback)", got, keepArchives)
+	}
+}
+
+func TestVerifyPassesOnAHealthyArchive(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.php"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := testManager(t, root, "example_db")
+
+	if _, err := manager.Create("example.pe", 0); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	result, err := manager.Verify("example.pe")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !result.Verified {
+		t.Fatalf("Verified = false, reason = %q", result.Reason)
+	}
+	if result.Files < 1 || result.Databases != 1 {
+		t.Fatalf("counts: files=%d databases=%d", result.Files, result.Databases)
+	}
+	if result.DurationSeconds < 0 {
+		t.Fatalf("DurationSeconds = %d", result.DurationSeconds)
+	}
+}
+
+func TestVerifyReportsACorruptArchiveWithoutError(t *testing.T) {
+	manager, blobs := testManager(t, t.TempDir())
+	blobs.objects["example.pe/20260101T000000Z.tar.gz"] = []byte("not a gzip stream")
+
+	result, err := manager.Verify("example.pe")
+	if err != nil {
+		t.Fatalf("Verify returned an error for a bad archive: %v", err)
+	}
+	if result.Verified || result.Reason == "" {
+		t.Fatalf("expected Verified:false with a reason, got %+v", result)
+	}
+}
+
+func TestVerifyErrorsWhenThereIsNothingToVerify(t *testing.T) {
+	manager, _ := testManager(t, t.TempDir())
+	if _, err := manager.Verify("example.pe"); err == nil {
+		t.Fatal("Verify accepted a site with no archives")
 	}
 }
 

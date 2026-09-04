@@ -57,8 +57,15 @@ func ConfigFromEnv() ExecutorConfig {
 	config := ExecutorConfig{
 		DefaultCommandTimeout: 5 * time.Minute,
 		DefaultRatePerMinute:  30,
-		TypeTimeouts:          map[string]time.Duration{},
-		TypeRates:             map[string]float64{},
+		// Backups move a whole document root and every database dump through
+		// S3; 5 minutes is not enough for a real site. Overridable per host
+		// with NUBIT_AGENT_COMMAND_TIMEOUT_site.backup.<verb>.
+		TypeTimeouts: map[string]time.Duration{
+			SiteBackupCreate:  30 * time.Minute,
+			SiteBackupRestore: 30 * time.Minute,
+			SiteBackupVerify:  30 * time.Minute,
+		},
+		TypeRates: map[string]float64{},
 		ExemptTypes: map[string]bool{
 			SystemPing:            true,
 			SystemReconcile:       true,

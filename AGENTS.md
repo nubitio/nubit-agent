@@ -16,10 +16,12 @@ infrastructure commands received from Nubit Control. It is never a remote shell.
   it over JMAP (`internal/mail`). Mailbox restoration is still assisted.
 - Backups are **S3 object storage** (`internal/objectstore` + `internal/backup`,
   `NUBIT_BACKUP_S3_*`): document root + `mariadb-dump` per database, real
-  restore, prune to 7, no local copy. The Basic/Business/Premium cadence,
-  retention and RPO/RTO in
+  restore, no local copy. `site.backup.create` prunes on the plan's
+  `retentionDays` (window + a seven-newest floor); `site.backup.verify` does a
+  scratch-dir restore rehearsal. The Basic/Business/Premium **cadence** and the
+  RPO/RTO scheduler in
   [`docs/adr/ADR-001-mvp-hosting-platform-baseline.md`](docs/adr/ADR-001-mvp-hosting-platform-baseline.md)
-  are **not** yet scheduled/enforced.
+  live in nubit-control, not here.
 - The current Agent credential is temporary; mTLS is a future migration, not an
   MVP transport decision.
 
