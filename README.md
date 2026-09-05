@@ -132,7 +132,26 @@ Bypass a work-in-progress push with `git push --no-verify`.
 
 The health endpoint binds to `127.0.0.1:9090` by default. Configure another address
 only through `NUBIT_AGENT_LISTEN_ADDR`; configure persistent state with
-`NUBIT_AGENT_STATE_DIR`.
+`NUBIT_AGENT_STATE_DIR`. The daemon also serves `GET /status` there — a
+read-only JSON view of poll health, transport, job counters, outbox depth and
+local site count, with no secrets — usable from a script or an alert probe.
+
+## Operator TUI
+
+`nubit-agent tui` is a full-screen cockpit for the node it runs on. Run it
+over SSH on the box; it is a separate short-lived process (like
+`nubit-agent enroll`), not part of the daemon. It reads the daemon's
+`GET /status` and the state files, shows Overview / Jobs / Sites panels, and
+offers a small set of confirmed node-local actions — drift report, outbox
+flush, mTLS enrollment, and a `system.reset`-equivalent node reset that
+requires typing `RESET`. The mutating actions refuse while the daemon is
+running; stop the unit first or drive the change from Control. It never opens
+a shell and never mutates Control. See [`docs/tui.md`](docs/tui.md).
+
+```bash
+nubit-agent tui
+nubit-agent tui --addr 127.0.0.1:9090 --state-dir /var/lib/nubit-agent
+```
 
 ## Control-plane polling
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,8 +30,10 @@ import (
 	"github.com/nubitio/nubit-agent/internal/objectstore"
 	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
+	"github.com/nubitio/nubit-agent/internal/status"
 	"github.com/nubitio/nubit-agent/internal/telemetry"
 	"github.com/nubitio/nubit-agent/internal/tls"
+	"github.com/nubitio/nubit-agent/internal/tui"
 	"github.com/nubitio/nubit-agent/internal/version"
 )
 
@@ -64,6 +67,18 @@ func main() {
 		return
 	}
 
+	// `nubit-agent tui` is the operator cockpit for this node: it reads the
+	// running daemon's GET /status and its state files, and offers a small
+	// set of confirmed local actions (enroll, reconcile, node reset, outbox
+	// flush). It never opens a shell and never mutates Control.
+	if len(os.Args) > 1 && os.Args[1] == "tui" {
+		if err := runTUI(os.Args[2:]); err != nil {
+			log.Printf("tui: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	address := os.Getenv("NUBIT_AGENT_LISTEN_ADDR")
 	if address == "" {
 		address = defaultListenAddr
@@ -88,6 +103,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize result outbox: %v", err)
 	}
+
+	reporter := status.New(status.Snapshot{
+		Version:    version.Version,
+		ListenAddr: address,
+		StateDir:   stateDir,
+		ControlURL: os.Getenv("NUBIT_CONTROL_URL"),
+		Transport:  status.TransportOffline,
+	})
+	reporter.SetDynamic(
+		func() int { return len(outbox.List()) },
+		func() int { return len(siteStore.List()) },
+	)
 
 	provisioner := site.Provisioner{Runner: site.OSRunner{}, Store: siteStore}
 	sftp := access.Manager{Runner: site.OSRunner{}, Sites: siteStore, ConfigDir: "/etc/ssh/sshd_config.d", KeysDir: filepath.Join(stateDir, "authorized_keys")}
@@ -141,7 +168,7 @@ func main() {
 	}()
 
 	updater := startSelfUpdate(ctx)
-	if client := startPolling(ctx, executor, outbox, updater, stop); client != nil {
+	if client := startPolling(ctx, executor, outbox, updater, stop, reporter); client != nil {
 		go publishInventory(ctx, client, provisioner, 5*time.Minute)
 	}
 
@@ -149,6 +176,15 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(writer, `{"status":"ok"}`)
+	})
+	// GET /status is the operator/TUI view of this process's session: poll
+	// health, transport, job counters, outbox depth, local site count. It is
+	// read-only and carries no secrets.
+	mux.HandleFunc("GET /status", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		encoder := json.NewEncoder(writer)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(reporter.Snapshot())
 	})
 
 	server := &http.Server{
@@ -215,11 +251,13 @@ func startPolling(
 	outbox controlplane.Outbox,
 	updater *selfupdate.Updater,
 	stop context.CancelFunc,
+	reporter *status.Reporter,
 ) *controlplane.Client {
 	controlURL := os.Getenv("NUBIT_CONTROL_URL")
 	token := os.Getenv("NUBIT_AGENT_TOKEN")
 	if controlURL == "" {
 		log.Print("nubit-agent: NUBIT_CONTROL_URL not set, control-plane polling disabled")
+		reporter.MarkPolling(false, "")
 		return nil
 	}
 	configDir := os.Getenv("NUBIT_AGENT_CONFIG_DIR")
@@ -262,22 +300,34 @@ func startPolling(
 			log.Fatalf("nubit-agent: load mTLS identity: %v", err)
 		}
 		client = controlplane.NewMTLSClient(controlURL, tlsConfig)
+		reporter.SetTransport(status.TransportMTLS, true)
+		if expiry, expiryErr := manager.CertificateExpiry(); expiryErr == nil {
+			reporter.SetCertNotAfter(expiry)
+		}
 		renewInterval := getDurationEnv("NUBIT_AGENT_RENEW_CHECK_INTERVAL", defaultRenewInterval)
 		renewThreshold := getDurationEnv("NUBIT_AGENT_RENEW_THRESHOLD", defaultRenewThreshold)
 		go renewCertificate(ctx, manager, renewInterval, renewThreshold)
 	} else {
 		if token == "" {
 			log.Print("nubit-agent: no certificate or NUBIT_AGENT_TOKEN configured, polling disabled")
+			reporter.MarkPolling(false, "")
 			return nil
 		}
 		client = controlplane.NewClient(controlURL, token)
+		reporter.SetTransport(status.TransportToken, false)
 	}
-	options := []controlplane.PollOption{}
+	reporter.MarkPolling(true, interval.String())
+	options := []controlplane.PollOption{
+		controlplane.WithStatusSink(func(err error, fetched, executed int) {
+			reporter.RecordPoll(err, fetched, executed)
+		}),
+	}
 	if updater != nil {
 		// Exiting is how the update is applied: systemd restarts the service and
 		// picks up the binary already swapped in on disk.
 		options = append(options, controlplane.WithStopCheck(updater.RestartPending, func() {
 			log.Print("nubit-agent: idle with an update staged, exiting for restart")
+			reporter.SetSelfUpdatePending(true)
 			stop()
 		}))
 	}
@@ -372,12 +422,27 @@ func runEnroll(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *token == "" {
-		return errors.New("--token is required")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	expiry, err := enrollWithToken(ctx, *token)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Enrollment successful. Cert expires at: %s\n", expiry.UTC().Format(time.RFC3339))
+	return nil
+}
+
+// enrollWithToken runs the mTLS enrollment against the configured Control URL
+// and returns the issued certificate's expiry. It is shared by the `enroll`
+// subcommand and the TUI's Actions panel so both persist identity the same
+// way.
+func enrollWithToken(ctx context.Context, token string) (time.Time, error) {
+	if strings.TrimSpace(token) == "" {
+		return time.Time{}, errors.New("--token is required")
 	}
 	controlURL := os.Getenv("NUBIT_CONTROL_URL")
 	if controlURL == "" {
-		return errors.New("NUBIT_CONTROL_URL is required")
+		return time.Time{}, errors.New("NUBIT_CONTROL_URL is required")
 	}
 	stateDir := os.Getenv("NUBIT_AGENT_STATE_DIR")
 	if stateDir == "" {
@@ -393,17 +458,58 @@ func runEnroll(args []string) error {
 		ControlURL:     controlURL,
 		RootCAPath:     os.Getenv("NUBIT_STEPCA_ROOT_CERT_PATH"),
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := manager.Enroll(ctx, *token); err != nil {
-		return err
+	if err := manager.Enroll(ctx, token); err != nil {
+		return time.Time{}, err
 	}
 	expiry, err := manager.CertificateExpiry()
 	if err != nil {
-		return fmt.Errorf("enrollment succeeded but reading expiry failed: %w", err)
+		return time.Time{}, fmt.Errorf("enrollment succeeded but reading expiry failed: %w", err)
 	}
-	fmt.Printf("Enrollment successful. Cert expires at: %s\n", expiry.UTC().Format(time.RFC3339))
-	return nil
+	return expiry, nil
+}
+
+// runTUI implements the `nubit-agent tui` subcommand: a full-screen operator
+// cockpit for this node. Like `enroll` it bypasses the daemon's HTTP server
+// and polling loop — it is a separate short-lived process the operator runs
+// over SSH. It talks to the running daemon only through its GET /status
+// endpoint and the shared state files under the state directory.
+func runTUI(args []string) error {
+	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
+	addr := flags.String("addr", "", "daemon status address (default NUBIT_AGENT_LISTEN_ADDR or "+defaultListenAddr+")")
+	stateDir := flags.String("state-dir", "", "agent state directory (default NUBIT_AGENT_STATE_DIR or "+defaultStateDir+")")
+	refresh := flags.Duration("refresh", 2*time.Second, "status/state refresh interval")
+	controlAdminURL := flags.String("control-admin-url", os.Getenv("NUBIT_CONTROL_URL"), "optional nubit-control base URL for the read-only Control panel")
+	controlAdminToken := flags.String("control-admin-token", os.Getenv("NUBIT_CONTROL_ADMIN_TOKEN"), "bearer token for --control-admin-url")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	if *addr == "" {
+		if *addr = os.Getenv("NUBIT_AGENT_LISTEN_ADDR"); *addr == "" {
+			*addr = defaultListenAddr
+		}
+	}
+	if *stateDir == "" {
+		if *stateDir = os.Getenv("NUBIT_AGENT_STATE_DIR"); *stateDir == "" {
+			*stateDir = defaultStateDir
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return tui.Run(ctx, tui.Options{
+		StatusURL:         "http://" + *addr,
+		StateDir:          *stateDir,
+		ControlURL:        os.Getenv("NUBIT_CONTROL_URL"),
+		Refresh:           *refresh,
+		ControlAdminURL:   *controlAdminURL,
+		ControlAdminToken: *controlAdminToken,
+		Enroll:            enrollWithToken,
+	})
 }
 
 // verifyStartCertificate enforces the on-disk mTLS material at startup. The

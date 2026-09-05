@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,26 @@ import (
 	"sort"
 	"sync"
 )
+
+// Flush reports every pending result to Nubit Control and removes the ones
+// Control accepted, returning how many were drained. A transport error stops
+// the drain and is returned along with the count sent so far; the remainder
+// stay queued for the next attempt. The poll loop drains the outbox on every
+// tick through the same path — the operator TUI calls this to force it
+// between ticks.
+func Flush(ctx context.Context, client *Client, outbox Outbox) (int, error) {
+	drained := 0
+	for _, pending := range outbox.List() {
+		if err := client.ReportPending(ctx, pending); err != nil {
+			return drained, fmt.Errorf("report result for command %s: %w", pending.CommandID, err)
+		}
+		if err := outbox.Delete(pending.CommandID); err != nil {
+			return drained, fmt.Errorf("delete reported result %s from outbox: %w", pending.CommandID, err)
+		}
+		drained++
+	}
+	return drained, nil
+}
 
 // Outbox put/delete failures are classified so the poller can decide whether a
 // single bad write should abort the whole batch or be treated as recoverable.

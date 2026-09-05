@@ -25,6 +25,17 @@ type PollOption func(*pollSettings)
 type pollSettings struct {
 	shouldStop func() bool
 	onStop     func()
+	statusSink func(err error, fetched, executed int)
+}
+
+// WithStatusSink reports the outcome of every poll pass: err is nil when the
+// pass reached Nubit Control, and fetched/executed are the job counts for
+// that pass. The daemon feeds this into internal/status so GET /status and
+// the operator TUI can show whether polling is healthy.
+func WithStatusSink(sink func(err error, fetched, executed int)) PollOption {
+	return func(settings *pollSettings) {
+		settings.statusSink = sink
+	}
 }
 
 // WithStopCheck asks the loop to stop between polls when shouldStop reports
@@ -59,7 +70,13 @@ func Poll(ctx context.Context, client *Client, executor Executor, outbox Outbox,
 		return true
 	}
 
-	pollOnce(ctx, client, executor, outbox)
+	report := func(fetched, executed int, err error) {
+		if settings.statusSink != nil {
+			settings.statusSink(err, fetched, executed)
+		}
+	}
+
+	report(pollOnce(ctx, client, executor, outbox))
 	if stopRequested() {
 		return
 	}
@@ -72,7 +89,7 @@ func Poll(ctx context.Context, client *Client, executor Executor, outbox Outbox,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pollOnce(ctx, client, executor, outbox)
+			report(pollOnce(ctx, client, executor, outbox))
 			if stopRequested() {
 				return
 			}
@@ -80,19 +97,27 @@ func Poll(ctx context.Context, client *Client, executor Executor, outbox Outbox,
 	}
 }
 
-func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Outbox) {
+// errOutboxFlush is what pollOnce reports to the status sink when the pending
+// outbox could not be drained to Control. It is not returned to callers that
+// ignore the sink — the loop still swallows it and retries next tick.
+var errOutboxFlush = errors.New("pending results could not be reported to Control")
+
+// pollOnce runs one poll pass and returns the job counts plus whether the
+// pass reached Control. A returned error is informational for the status
+// sink; the caller keeps looping regardless.
+func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Outbox) (fetched, executed int, err error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "agent.poll")
 	defer span.End()
 
 	if !flushOutbox(ctx, client, outbox) {
-		return
+		return 0, 0, errOutboxFlush
 	}
 
-	commands, err := client.FetchJobs(ctx)
-	if err != nil {
-		log.Printf("nubit-agent: fetch jobs failed: %v", err)
-		telemetry.MarkError(span, err)
-		return
+	commands, fetchErr := client.FetchJobs(ctx)
+	if fetchErr != nil {
+		log.Printf("nubit-agent: fetch jobs failed: %v", fetchErr)
+		telemetry.MarkError(span, fetchErr)
+		return 0, 0, fetchErr
 	}
 	if len(commands) > 0 {
 		log.Printf("nubit-agent: fetched %d command(s)", len(commands))
@@ -101,10 +126,12 @@ func pollOnce(ctx context.Context, client *Client, executor Executor, outbox Out
 	telemetry.RecordPoll(ctx, len(commands))
 
 	for _, cmd := range commands {
+		executed++
 		if !executeAndReport(ctx, client, executor, outbox, cmd) {
-			return
+			return len(commands), executed, errOutboxFlush
 		}
 	}
+	return len(commands), executed, nil
 }
 
 func executeAndReport(ctx context.Context, client *Client, executor Executor, outbox Outbox, cmd command.Command) bool {
@@ -154,15 +181,9 @@ func executeAndReport(ctx context.Context, client *Client, executor Executor, ou
 }
 
 func flushOutbox(ctx context.Context, client *Client, outbox Outbox) bool {
-	for _, pending := range outbox.List() {
-		if err := client.ReportPending(ctx, pending); err != nil {
-			log.Printf("nubit-agent: report result for command %s failed; kept in outbox: %v", pending.CommandID, err)
-			return false
-		}
-		if err := outbox.Delete(pending.CommandID); err != nil {
-			log.Printf("nubit-agent: delete reported result %s from outbox failed: %v", pending.CommandID, err)
-			return false
-		}
+	if _, err := Flush(ctx, client, outbox); err != nil {
+		log.Printf("nubit-agent: %v; kept in outbox", err)
+		return false
 	}
 	return true
 }

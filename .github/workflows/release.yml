@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-          cache: false
+          cache: true
 
       - run: go vet ./...
       - run: go test -race ./...
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-          cache: false
+          cache: true
 
       - name: Resolve the release tag
         id: release

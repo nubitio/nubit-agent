@@ -34,3 +34,10 @@ lifecycle, or mailbox restore automation beyond the decision records.
 For NUBIT-MVP-001-T01, keep changes to documentation. Record an unknown as a
 pending item rather than adding a command, environment variable, or operational
 claim.
+
+**Carve-out (operator observability & tooling).** Local, read-only
+observability and the operator TUI are allowed to be code: the `GET /status`
+endpoint (`internal/status`) and `nubit-agent tui` (`internal/tui`). They do
+not add a privileged command type, do not change the Agent↔Control contract,
+and hold no secrets. The closed command set, the control-plane transport, and
+every operational claim about them stay under the rule above.

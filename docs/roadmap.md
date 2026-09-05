@@ -40,6 +40,11 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
 ## Completed
 
 - Local health endpoint.
+- Local read-only `GET /status` (poll health, transport, job counters, outbox
+  depth, local site count) and `nubit-agent tui`, a full-screen operator
+  cockpit for one node (Overview / Jobs / Sites / Actions / Control panels).
+  Observability and operator tooling only — no new command type, no change to
+  the control-plane contract. See `docs/tui.md`.
 - Versioned command contract and persistent idempotent executor.
 - `system.ping` command.
 - Debian 12 web-profile installer with `--dry-run`.
