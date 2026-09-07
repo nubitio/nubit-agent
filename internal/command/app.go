@@ -15,10 +15,10 @@ var wpLocale = regexp.MustCompile(`^[a-z]{2}(_[A-Z]{2})?$`)
 var emailAddress = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 
 // wpAdminUser is the WordPress admin login, which has no relation to any Unix
-// account: it allows mixed case and `_ . @ -` so an email address or a name
-// like "Admin" is accepted. It is passed to `wp core install --admin_user` as
-// a single argv entry, never to a shell.
-var wpAdminUser = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,60}$`)
+// account: WordPress permits mixed case, spaces, and `_ . @ + -`, so an
+// address like "owner+wp@example.com" or a name like "Site Admin" is accepted.
+// It is passed to wp-cli as a single argv entry, never to a shell.
+var wpAdminUser = regexp.MustCompile(`^[A-Za-z0-9._@+ -]{1,60}$`)
 
 // SiteAppInstallPayload is the site.app.install command payload. `app` is
 // restricted to "wordpress" (any other value fails closed); the database
@@ -90,13 +90,16 @@ func (p SiteAppInstallPayload) toRequest() site.AppInstallRequest {
 }
 
 // SiteAppUpdatePayload is the site.app.update command payload. With no
-// component flag set, all three (core, plugins, themes) are updated.
+// component flag set, all three (core, plugins, themes) are updated. ServiceID
+// is Control's own routing field: accepted so the payload can stay strict
+// about component keys without rejecting it, but unused here.
 type SiteAppUpdatePayload struct {
-	SiteID  string `json:"siteId"`
-	Core    bool   `json:"core"`
-	Plugins bool   `json:"plugins"`
-	Themes  bool   `json:"themes"`
-	DryRun  bool   `json:"dryRun"`
+	SiteID    string `json:"siteId"`
+	Core      bool   `json:"core"`
+	Plugins   bool   `json:"plugins"`
+	Themes    bool   `json:"themes"`
+	DryRun    bool   `json:"dryRun"`
+	ServiceID int64  `json:"serviceId"`
 }
 
 func parseSiteAppUpdate(payload json.RawMessage) (SiteAppUpdatePayload, error) {
@@ -122,6 +125,36 @@ func (p SiteAppUpdatePayload) toRequest() site.AppUpdateRequest {
 		Themes:  p.Themes,
 		DryRun:  p.DryRun,
 	}
+}
+
+// SiteAppAdminPasswordPayload is the site.app.admin-password command payload.
+// The agent always generates the new password and returns it once — the caller
+// does not get to choose it. ServiceID is Control's routing field, accepted
+// but unused here.
+type SiteAppAdminPasswordPayload struct {
+	SiteID    string `json:"siteId"`
+	AdminUser string `json:"adminUser"`
+	ServiceID int64  `json:"serviceId"`
+}
+
+func parseSiteAppAdminPassword(payload json.RawMessage) (SiteAppAdminPasswordPayload, error) {
+	var request SiteAppAdminPasswordPayload
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+	if !domainName.MatchString(request.SiteID) {
+		return request, errors.New("site id is invalid")
+	}
+	if !wpAdminUser.MatchString(request.AdminUser) {
+		return request, errors.New("admin user is invalid")
+	}
+	return request, nil
+}
+
+func (p SiteAppAdminPasswordPayload) toRequest() site.AppAdminPasswordRequest {
+	return site.AppAdminPasswordRequest{AdminUser: p.AdminUser}
 }
 
 func (p SiteAppInstallPayload) siteURL() string {

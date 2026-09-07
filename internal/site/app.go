@@ -245,25 +245,42 @@ type AppUpdateResult struct {
 // sequences its other backup jobs. Whether a site is updated on a schedule at
 // all — the per-site auto-update toggle — is control-plane state; this command
 // only executes.
-func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpdateResult, error) {
+// managedWordPress runs the preconditions every site.app.* command past the
+// install shares — state is known, it is a non-suspended managed WordPress
+// site, and `wp core is-installed` passes — and returns the state plus a
+// `wp` runner bound to it. The is-installed probe runs `--skip-plugins
+// --skip-themes` so a fataling must-use plugin cannot masquerade as "not
+// installed".
+func (p Provisioner) managedWordPress(siteID string) (State, func(args ...string) error, error) {
 	if p.Runner == nil || p.Store == nil {
-		return AppUpdateResult{}, errors.New("site provisioner is not configured")
+		return State{}, nil, errors.New("site provisioner is not configured")
 	}
 	state, found := p.Store.Get(siteID)
 	if !found {
-		return AppUpdateResult{}, fmt.Errorf("site %q is not known to this node", siteID)
+		return State{}, nil, fmt.Errorf("site %q is not known to this node", siteID)
 	}
 	if state.SystemUser == "" || state.DocumentRoot == "" {
-		return AppUpdateResult{}, errors.New("site state is missing a system user or document root")
+		return State{}, nil, errors.New("site state is missing a system user or document root")
 	}
 	if state.App != "wordpress" {
-		return AppUpdateResult{}, fmt.Errorf("site %q has no managed WordPress install", siteID)
+		return State{}, nil, fmt.Errorf("site %q has no managed WordPress install", siteID)
 	}
 	if state.Status == "suspended" {
-		return AppUpdateResult{}, fmt.Errorf("site %q is suspended; not updating it", siteID)
+		return State{}, nil, fmt.Errorf("site %q is suspended; not touching it", siteID)
+	}
+	wp := func(args ...string) error { return p.Runner.Run("sudo", wpArgv(state, args...)...) }
+	if err := wp("core", "is-installed", "--skip-plugins", "--skip-themes"); err != nil {
+		return State{}, nil, fmt.Errorf("site %q does not appear to have WordPress installed (wp core is-installed failed: %w)", siteID, err)
+	}
+	return state, wp, nil
+}
+
+func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpdateResult, error) {
+	state, wp, err := p.managedWordPress(siteID)
+	if err != nil {
+		return AppUpdateResult{}, err
 	}
 
-	wp := func(args ...string) error { return p.Runner.Run("sudo", wpArgv(state, args...)...) }
 	// wpValue reads a single scalar from wp-cli (e.g. `core version`). It runs
 	// with --skip-plugins --skip-themes so tenant code cannot print notices
 	// ahead of the value, and returns the last non-empty line in case
@@ -273,15 +290,11 @@ func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpda
 		if !ok {
 			return ""
 		}
-		out, err := runner.Output("sudo", wpArgv(state, append(args, "--skip-plugins", "--skip-themes")...)...)
-		if err != nil {
+		out, outErr := runner.Output("sudo", wpArgv(state, append(args, "--skip-plugins", "--skip-themes")...)...)
+		if outErr != nil {
 			return ""
 		}
 		return lastNonEmptyLine(string(out))
-	}
-
-	if err := wp("core", "is-installed"); err != nil {
-		return AppUpdateResult{}, fmt.Errorf("site %q does not appear to have WordPress installed (wp core is-installed failed: %w)", siteID, err)
 	}
 
 	core, plugins, themes := request.components()
@@ -322,6 +335,45 @@ func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpda
 
 	result.CoreAfter = wpValue("core", "version")
 	return result, nil
+}
+
+// AppAdminPasswordRequest resets a managed WordPress site's admin login.
+type AppAdminPasswordRequest struct {
+	AdminUser string
+}
+
+// AppAdminPasswordResult carries the new password back exactly once. It is the
+// only site.app.* result the executor does not cache — a cached copy would go
+// stale the moment the admin changes it in wp-admin — and it is never logged
+// and never written to site state.
+type AppAdminPasswordResult struct {
+	App           string `json:"app"`
+	AdminUser     string `json:"adminUser"`
+	AdminPassword string `json:"adminPassword"`
+}
+
+// AppAdminPassword sets a new, server-generated password for the given
+// WordPress admin login, running `wp user update <login> --user_pass=…
+// --skip-email --skip-plugins --skip-themes` as the site's own Unix user. The
+// login may be a user name, an e-mail, or an id — whatever the customer
+// registered with. The caller never chooses the password: it is always
+// generated so this path has no way to set a weak one.
+func (p Provisioner) AppAdminPassword(siteID string, request AppAdminPasswordRequest) (AppAdminPasswordResult, error) {
+	_, wp, err := p.managedWordPress(siteID)
+	if err != nil {
+		return AppAdminPasswordResult{}, err
+	}
+	login := strings.TrimSpace(request.AdminUser)
+	if login == "" {
+		return AppAdminPasswordResult{}, errors.New("an admin user is required")
+	}
+
+	password := generatePassword()
+	if err := wp("user", "update", login, "--user_pass="+password, "--skip-email", "--skip-plugins", "--skip-themes"); err != nil {
+		return AppAdminPasswordResult{}, fmt.Errorf("wp user update: %w", err)
+	}
+
+	return AppAdminPasswordResult{App: "wordpress", AdminUser: login, AdminPassword: password}, nil
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, trimmed. wp-cli prints

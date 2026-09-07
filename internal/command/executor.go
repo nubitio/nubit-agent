@@ -107,6 +107,7 @@ type SiteProvisioner interface {
 	RemoveDomain(siteID, domain string) (site.DomainResult, error)
 	AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error)
 	AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error)
+	AppAdminPassword(siteID string, request site.AppAdminPasswordRequest) (site.AppAdminPasswordResult, error)
 	Delete(siteID string, confirmed bool) (site.DeleteResult, error)
 	RuntimeInventory() ([]site.RuntimeInfo, error)
 	RemoveRuntime(phpVersion string, confirmed bool) (site.RemoveRuntimeResult, error)
@@ -264,7 +265,7 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 		}
 	}
 
-	cacheResult := !isSiteFilesCommand(command.Type)
+	cacheResult := !resultIsNotCached(command.Type)
 	if cacheResult {
 		if result, found := executor.store.Get(command.IdempotencyKey); found {
 			return result, nil
@@ -546,6 +547,19 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 			return Result{}, updateErr
 		}
 		output, err = json.Marshal(updated)
+	case SiteAppAdminPassword:
+		request, parseErr := parseSiteAppAdminPassword(command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.sites == nil {
+			return Result{}, errors.New("site provisioner is not configured")
+		}
+		reset, resetErr := executor.sites.AppAdminPassword(request.SiteID, request.toRequest())
+		if resetErr != nil {
+			return Result{}, resetErr
+		}
+		output, err = json.Marshal(reset)
 	case SiteDelete:
 		request, parseErr := parseSiteDelete(command.Payload)
 		if parseErr != nil {
@@ -861,12 +875,16 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 	}, nil
 }
 
-func isSiteFilesCommand(commandType string) bool {
+// resultIsNotCached lists command types whose result must not be replayed from
+// the idempotency store: read-through file/log/usage/backup queries that must
+// re-run, and site.app.admin-password, whose cached output is a WordPress
+// credential that would go stale the moment the admin changes it in wp-admin.
+func resultIsNotCached(commandType string) bool {
 	switch commandType {
 	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete,
 		SiteFilesUnzip, SiteFilesRename, SiteUsage, SiteLogsRead,
 		SiteCronList, SiteCronReplace, SiteBackupList, SiteBackupCreate, SiteBackupRestore,
-		SiteBackupVerify:
+		SiteBackupVerify, SiteAppAdminPassword:
 		return true
 	default:
 		return false

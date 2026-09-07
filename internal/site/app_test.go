@@ -537,6 +537,87 @@ func TestAppUpdateRefusesWhenWordPressIsNotInstalled(t *testing.T) {
 	}
 }
 
+func TestAppAdminPasswordResetsTheLoginAndReturnsTheNewPassword(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+
+	result, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "owner@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AdminUser != "owner@example.com" || result.AdminPassword == "" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	var updated bool
+	for _, c := range runner.calls {
+		if c[0] != "sudo" {
+			continue
+		}
+		if wpSubcommand(c[1:]) == "user update" {
+			updated = true
+			if !contains(c, "--user_pass="+result.AdminPassword) || !contains(c, "owner@example.com") {
+				t.Fatalf("wp user update missing args: %#v", c)
+			}
+		}
+	}
+	if !updated {
+		t.Fatalf("wp user update was not run: %#v", runner.calls)
+	}
+}
+
+func TestAppAdminPasswordAlwaysGeneratesAndRunsWithPluginsSkipped(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+
+	first, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AdminPassword == "" || first.AdminPassword == second.AdminPassword {
+		t.Fatalf("each reset must generate a fresh password: %q %q", first.AdminPassword, second.AdminPassword)
+	}
+	for _, c := range runner.calls {
+		if wpSubcommand(c[1:]) == "user update" && (!contains(c, "--skip-plugins") || !contains(c, "--skip-themes")) {
+			t.Fatalf("wp user update did not skip plugins/themes: %#v", c)
+		}
+	}
+}
+
+func TestAppAdminPasswordRefusesWithoutAManagedAppOrAdminUser(t *testing.T) {
+	p, runner := newSite(t)
+	runner.isInstalled = true
+
+	// no managed app
+	if _, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"}); err == nil {
+		t.Fatal("expected an error for a site with no managed WordPress")
+	}
+
+	markWordPress(t, p)
+	if _, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "  "}); err == nil {
+		t.Fatal("expected an error for a blank admin user")
+	}
+}
+
+func TestAppAdminPasswordRefusesASuspendedSite(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	state, _ := p.Store.Get("example.com")
+	state.Status = "suspended"
+	if err := p.Store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"}); err == nil {
+		t.Fatal("expected a suspended site to be refused")
+	}
+}
+
 func TestAppUpdateOnlyUpdatesTheRequestedComponent(t *testing.T) {
 	p, runner := newSite(t)
 	markWordPress(t, p)

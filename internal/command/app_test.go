@@ -81,11 +81,52 @@ func TestParseSiteAppUpdateRejectsABadSiteId(t *testing.T) {
 	}
 }
 
-// A misspelled component key must not silently fall through to "update all".
-func TestParseSiteAppUpdateRejectsUnknownFields(t *testing.T) {
-	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "plugin": true})
-	if _, err := parseSiteAppUpdate(raw); err == nil {
-		t.Fatal("expected an unknown field to be rejected")
+// A misspelled component key must not silently fall through to "update all",
+// but Control's serviceId routing field is fine.
+func TestParseSiteAppUpdateRejectsUnknownFieldsButAcceptsServiceId(t *testing.T) {
+	bad, _ := json.Marshal(map[string]any{"siteId": "example.com", "plugin": true})
+	if _, err := parseSiteAppUpdate(bad); err == nil {
+		t.Fatal("expected a misspelled component key to be rejected")
+	}
+	ok, _ := json.Marshal(map[string]any{"siteId": "example.com", "plugins": true, "serviceId": 7})
+	if _, err := parseSiteAppUpdate(ok); err != nil {
+		t.Fatalf("serviceId should be accepted: %v", err)
+	}
+}
+
+func TestParseSiteAppAdminPasswordAcceptsWordPressLogins(t *testing.T) {
+	for _, login := range []string{"owner@example.com", "owner+wp@example.com", "Site Admin", "admin.user-1"} {
+		raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "adminUser": login})
+		request, err := parseSiteAppAdminPassword(raw)
+		if err != nil {
+			t.Fatalf("login %q should be accepted: %v", login, err)
+		}
+		if request.toRequest().AdminUser != login {
+			t.Fatalf("unexpected request: %#v", request)
+		}
+	}
+}
+
+func TestParseSiteAppAdminPasswordAcceptsControlsServiceId(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "adminUser": "admin", "serviceId": 42})
+	if _, err := parseSiteAppAdminPassword(raw); err != nil {
+		t.Fatalf("serviceId should be accepted: %v", err)
+	}
+}
+
+func TestParseSiteAppAdminPasswordRejectsBadInput(t *testing.T) {
+	cases := map[string]map[string]any{
+		"bad site id":    {"siteId": "not a domain", "adminUser": "admin"},
+		"bad admin user": {"siteId": "example.com", "adminUser": "no spaces!"},
+		"unknown field":  {"siteId": "example.com", "adminUser": "admin", "user_pass": "x"},
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, _ := json.Marshal(body)
+			if _, err := parseSiteAppAdminPassword(raw); err == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+		})
 	}
 }
 
