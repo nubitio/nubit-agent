@@ -149,14 +149,24 @@ wp-cli + MariaDB run is part of the same follow-up as the install.
 A third closed command — **`site.app.admin-password`** — backs the portal's
 "reset WordPress admin password" action (nubit-control #29).
 
-- **Payload:** `{siteId, adminUser, password?}`. `adminUser` is validated with
-  the same `^[A-Za-z0-9._@-]{1,60}$` rule as `site.app.install` (an e-mail
-  login is fine); unknown fields are rejected. A blank `password` means the
-  agent generates one.
-- **Execution:** `wp user update <adminUser> --user_pass=<pw> --skip-email` as
-  the site's own Unix user. The site must carry the managed profile
-  (`app == "wordpress"`), pass `wp core is-installed`, and not be suspended.
+- **Payload:** `{siteId, adminUser}`. `adminUser` is validated with
+  `^[A-Za-z0-9._@+ -]{1,60}$` — WordPress permits spaces and `+`, so an address
+  like `owner+wp@example.com` or a name like `Site Admin` is accepted (the
+  `site.app.install` `adminUser` rule was widened to match). Unknown fields are
+  rejected. **The caller does not choose the password**: it is always
+  server-generated, so this path has no way to set a weak one.
+- **Execution:** `wp user update <adminUser> --user_pass=<pw> --skip-email
+  --skip-plugins --skip-themes` as the site's own Unix user. The shared
+  `managedWordPress()` guard (also used by `site.app.update`) checks the
+  managed profile, non-suspended status, and a `wp core is-installed` that
+  itself runs `--skip-plugins --skip-themes` so a fataling must-use plugin
+  cannot masquerade as "not installed".
+- **Not cached:** unlike every other `site.app.*` result, this one is excluded
+  from the executor's idempotency store (`resultIsNotCached`). A replayed key
+  re-runs the reset rather than returning a stale password that the admin may
+  already have changed in wp-admin.
 - The new password is returned in the result **once** — never logged, never on
-  site state — the same contract as the install password.
+  site state. It is in the outbox until Control acks the result (a short-lived,
+  mode-0600 file), the same exposure `site.app.install`'s password already has.
 - 3-minute timeout entry; default rate limit. Same fake-`Runner` test coverage
   and pending real-VM validation as the other two.

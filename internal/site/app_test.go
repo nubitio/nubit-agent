@@ -566,17 +566,26 @@ func TestAppAdminPasswordResetsTheLoginAndReturnsTheNewPassword(t *testing.T) {
 	}
 }
 
-func TestAppAdminPasswordUsesTheSuppliedPasswordWhenGiven(t *testing.T) {
+func TestAppAdminPasswordAlwaysGeneratesAndRunsWithPluginsSkipped(t *testing.T) {
 	p, runner := newSite(t)
 	markWordPress(t, p)
 	runner.isInstalled = true
 
-	result, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin", Password: "chosen-pw"})
+	first, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AdminPassword != "chosen-pw" {
-		t.Fatalf("supplied password not used: %#v", result)
+	second, err := p.AppAdminPassword("example.com", AppAdminPasswordRequest{AdminUser: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AdminPassword == "" || first.AdminPassword == second.AdminPassword {
+		t.Fatalf("each reset must generate a fresh password: %q %q", first.AdminPassword, second.AdminPassword)
+	}
+	for _, c := range runner.calls {
+		if wpSubcommand(c[1:]) == "user update" && (!contains(c, "--skip-plugins") || !contains(c, "--skip-themes")) {
+			t.Fatalf("wp user update did not skip plugins/themes: %#v", c)
+		}
 	}
 }
 

@@ -15,10 +15,10 @@ var wpLocale = regexp.MustCompile(`^[a-z]{2}(_[A-Z]{2})?$`)
 var emailAddress = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 
 // wpAdminUser is the WordPress admin login, which has no relation to any Unix
-// account: it allows mixed case and `_ . @ -` so an email address or a name
-// like "Admin" is accepted. It is passed to `wp core install --admin_user` as
-// a single argv entry, never to a shell.
-var wpAdminUser = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,60}$`)
+// account: WordPress permits mixed case, spaces, and `_ . @ + -`, so an
+// address like "owner+wp@example.com" or a name like "Site Admin" is accepted.
+// It is passed to wp-cli as a single argv entry, never to a shell.
+var wpAdminUser = regexp.MustCompile(`^[A-Za-z0-9._@+ -]{1,60}$`)
 
 // SiteAppInstallPayload is the site.app.install command payload. `app` is
 // restricted to "wordpress" (any other value fails closed); the database
@@ -125,11 +125,11 @@ func (p SiteAppUpdatePayload) toRequest() site.AppUpdateRequest {
 }
 
 // SiteAppAdminPasswordPayload is the site.app.admin-password command payload.
-// A blank password means the agent generates one and returns it once.
+// The agent always generates the new password and returns it once — the caller
+// does not get to choose it.
 type SiteAppAdminPasswordPayload struct {
 	SiteID    string `json:"siteId"`
 	AdminUser string `json:"adminUser"`
-	Password  string `json:"password"`
 }
 
 func parseSiteAppAdminPassword(payload json.RawMessage) (SiteAppAdminPasswordPayload, error) {
@@ -149,7 +149,7 @@ func parseSiteAppAdminPassword(payload json.RawMessage) (SiteAppAdminPasswordPay
 }
 
 func (p SiteAppAdminPasswordPayload) toRequest() site.AppAdminPasswordRequest {
-	return site.AppAdminPasswordRequest{AdminUser: p.AdminUser, Password: p.Password}
+	return site.AppAdminPasswordRequest{AdminUser: p.AdminUser}
 }
 
 func (p SiteAppInstallPayload) siteURL() string {

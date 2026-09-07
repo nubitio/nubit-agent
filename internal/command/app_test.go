@@ -89,14 +89,16 @@ func TestParseSiteAppUpdateRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestParseSiteAppAdminPasswordAcceptsAValidPayload(t *testing.T) {
-	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "adminUser": "owner@example.com"})
-	request, err := parseSiteAppAdminPassword(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.toRequest().AdminUser != "owner@example.com" {
-		t.Fatalf("unexpected request: %#v", request)
+func TestParseSiteAppAdminPasswordAcceptsWordPressLogins(t *testing.T) {
+	for _, login := range []string{"owner@example.com", "owner+wp@example.com", "Site Admin", "admin.user-1"} {
+		raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "adminUser": login})
+		request, err := parseSiteAppAdminPassword(raw)
+		if err != nil {
+			t.Fatalf("login %q should be accepted: %v", login, err)
+		}
+		if request.toRequest().AdminUser != login {
+			t.Fatalf("unexpected request: %#v", request)
+		}
 	}
 }
 

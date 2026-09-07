@@ -264,6 +264,27 @@ func TestExecutorReturnsStoredResultForDuplicateIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestExecutorDoesNotCacheAdminPasswordResults(t *testing.T) {
+	counter := &counterProvisioner{}
+	executor := NewExecutor(NewMemoryStore(), counter)
+	command := Command{
+		ID: "cmd_pw", Type: SiteAppAdminPassword, Version: 1, IdempotencyKey: "site:app:pw:dup",
+		Payload: []byte(`{"siteId":"example.com","adminUser":"admin"}`),
+	}
+	if _, err := executor.Execute(command); err != nil {
+		t.Fatal(err)
+	}
+	command.ID = "cmd_pw_2"
+	if _, err := executor.Execute(command); err != nil {
+		t.Fatal(err)
+	}
+	// A replay must re-run wp-cli (a stale cached password would lock the
+	// admin out), unlike SystemPing which returns the stored result.
+	if got := counter.Calls(); got != 2 {
+		t.Fatalf("expected the reset to run twice for a replayed key, ran %d", got)
+	}
+}
+
 func TestExecutorRejectsUnknownCommand(t *testing.T) {
 	executor := NewExecutor(NewMemoryStore())
 	_, err := executor.Execute(Command{
