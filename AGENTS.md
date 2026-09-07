@@ -58,7 +58,9 @@ core/plugin/theme update` as the site user with optional `--dry-run` and
 per-component selection; a component failure is a reported result, not a
 command error, and the `core` version delta is read via an optional
 `OutputRunner`. The per-site auto-update toggle and backup-before-update are
-control-plane concerns — the agent only executes.
+control-plane concerns — the agent only executes. A third, `site.app.admin-password`,
+resets the WordPress admin login (`wp user update … --user_pass`) for the
+portal's reset action and returns the new password once.
 Real-VM / disposable-container validation against wp-cli + MariaDB is the
 follow-up before it runs on a customer node; managed core/plugin auto-updates
 are separate.

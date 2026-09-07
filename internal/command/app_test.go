@@ -89,6 +89,33 @@ func TestParseSiteAppUpdateRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestParseSiteAppAdminPasswordAcceptsAValidPayload(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "adminUser": "owner@example.com"})
+	request, err := parseSiteAppAdminPassword(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.toRequest().AdminUser != "owner@example.com" {
+		t.Fatalf("unexpected request: %#v", request)
+	}
+}
+
+func TestParseSiteAppAdminPasswordRejectsBadInput(t *testing.T) {
+	cases := map[string]map[string]any{
+		"bad site id":    {"siteId": "not a domain", "adminUser": "admin"},
+		"bad admin user": {"siteId": "example.com", "adminUser": "no spaces!"},
+		"unknown field":  {"siteId": "example.com", "adminUser": "admin", "user_pass": "x"},
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, _ := json.Marshal(body)
+			if _, err := parseSiteAppAdminPassword(raw); err == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+		})
+	}
+}
+
 func TestParseSiteAppInstallRejectsBadInput(t *testing.T) {
 	cases := map[string]func(m map[string]any){
 		"non-wordpress app": func(m map[string]any) { m["app"] = "joomla" },

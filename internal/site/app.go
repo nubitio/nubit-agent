@@ -324,6 +324,64 @@ func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpda
 	return result, nil
 }
 
+// AppAdminPasswordRequest resets a managed WordPress site's admin login. A
+// blank Password means "generate one".
+type AppAdminPasswordRequest struct {
+	AdminUser string
+	Password  string
+}
+
+// AppAdminPasswordResult carries the new password back exactly once; it is
+// never logged and never written to site state.
+type AppAdminPasswordResult struct {
+	App           string `json:"app"`
+	AdminUser     string `json:"adminUser"`
+	AdminPassword string `json:"adminPassword"`
+}
+
+// AppAdminPassword sets a new password for the given WordPress admin login,
+// running `wp user update <login> --user_pass=… --skip-email` as the site's own
+// Unix user. The login may be a user name, an e-mail, or an id — whatever the
+// customer registered with. The site must carry a managed WordPress install
+// and not be suspended.
+func (p Provisioner) AppAdminPassword(siteID string, request AppAdminPasswordRequest) (AppAdminPasswordResult, error) {
+	if p.Runner == nil || p.Store == nil {
+		return AppAdminPasswordResult{}, errors.New("site provisioner is not configured")
+	}
+	state, found := p.Store.Get(siteID)
+	if !found {
+		return AppAdminPasswordResult{}, fmt.Errorf("site %q is not known to this node", siteID)
+	}
+	if state.SystemUser == "" || state.DocumentRoot == "" {
+		return AppAdminPasswordResult{}, errors.New("site state is missing a system user or document root")
+	}
+	if state.App != "wordpress" {
+		return AppAdminPasswordResult{}, fmt.Errorf("site %q has no managed WordPress install", siteID)
+	}
+	if state.Status == "suspended" {
+		return AppAdminPasswordResult{}, fmt.Errorf("site %q is suspended; not touching it", siteID)
+	}
+	login := strings.TrimSpace(request.AdminUser)
+	if login == "" {
+		return AppAdminPasswordResult{}, errors.New("an admin user is required")
+	}
+
+	wp := func(args ...string) error { return p.Runner.Run("sudo", wpArgv(state, args...)...) }
+	if err := wp("core", "is-installed"); err != nil {
+		return AppAdminPasswordResult{}, fmt.Errorf("site %q does not appear to have WordPress installed (wp core is-installed failed: %w)", siteID, err)
+	}
+
+	password := request.Password
+	if password == "" {
+		password = generatePassword()
+	}
+	if err := wp("user", "update", login, "--user_pass="+password, "--skip-email"); err != nil {
+		return AppAdminPasswordResult{}, fmt.Errorf("wp user update: %w", err)
+	}
+
+	return AppAdminPasswordResult{App: "wordpress", AdminUser: login, AdminPassword: password}, nil
+}
+
 // lastNonEmptyLine returns the last non-blank line of s, trimmed. wp-cli prints
 // the value it is asked for last, so this survives a stray notice line before
 // it.

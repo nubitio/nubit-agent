@@ -78,6 +78,10 @@ func (fakeSiteProvisioner) AppUpdate(siteID string, request site.AppUpdateReques
 	return site.AppUpdateResult{App: "wordpress", DryRun: request.DryRun, OK: true, Components: []site.AppComponentResult{{Component: "core", OK: true}}}, nil
 }
 
+func (fakeSiteProvisioner) AppAdminPassword(siteID string, request site.AppAdminPasswordRequest) (site.AppAdminPasswordResult, error) {
+	return site.AppAdminPasswordResult{App: "wordpress", AdminUser: request.AdminUser, AdminPassword: "reset-secret"}, nil
+}
+
 type fakeFilesProvisioner struct{}
 
 func (fakeFilesProvisioner) List(siteID, rel string) (files.ListResult, error) {
@@ -170,6 +174,24 @@ func TestExecutorDispatchesSiteAppUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !out.OK || !out.DryRun || out.App != "wordpress" {
+		t.Fatalf("unexpected result: %#v", out)
+	}
+}
+
+func TestExecutorDispatchesSiteAppAdminPassword(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
+	result, err := executor.Execute(Command{
+		ID: "cmd_app_pw", Type: SiteAppAdminPassword, Version: 1, IdempotencyKey: "site:app:pw",
+		Payload: []byte(`{"siteId":"example.com","adminUser":"owner@example.com"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out site.AppAdminPasswordResult
+	if err := json.Unmarshal(result.Output, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.AdminUser != "owner@example.com" || out.AdminPassword == "" {
 		t.Fatalf("unexpected result: %#v", out)
 	}
 }
@@ -405,6 +427,11 @@ func (slow slowSiteProvisioner) AppUpdate(siteID string, request site.AppUpdateR
 	return site.AppUpdateResult{App: "wordpress", OK: true}, nil
 }
 
+func (slow slowSiteProvisioner) AppAdminPassword(siteID string, request site.AppAdminPasswordRequest) (site.AppAdminPasswordResult, error) {
+	time.Sleep(slow.delay)
+	return site.AppAdminPasswordResult{App: "wordpress", AdminUser: request.AdminUser, AdminPassword: "x"}, nil
+}
+
 // ensure context import is used (the fixture is internal to these tests
 // and uses a select on ctx in helpers; declared here to keep the import).
 var _ = context.Background
@@ -580,6 +607,11 @@ func (counter *counterProvisioner) AppInstall(siteID string, request site.AppIns
 func (counter *counterProvisioner) AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error) {
 	counter.record()
 	return site.AppUpdateResult{App: "wordpress", OK: true}, nil
+}
+
+func (counter *counterProvisioner) AppAdminPassword(siteID string, request site.AppAdminPasswordRequest) (site.AppAdminPasswordResult, error) {
+	counter.record()
+	return site.AppAdminPasswordResult{App: "wordpress", AdminUser: request.AdminUser, AdminPassword: "x"}, nil
 }
 
 func (counter *counterProvisioner) record() {

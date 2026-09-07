@@ -61,11 +61,12 @@ func ConfigFromEnv() ExecutorConfig {
 		// S3; 5 minutes is not enough for a real site. Overridable per host
 		// with NUBIT_AGENT_COMMAND_TIMEOUT_site.backup.<verb>.
 		TypeTimeouts: map[string]time.Duration{
-			SiteBackupCreate:  30 * time.Minute,
-			SiteBackupRestore: 30 * time.Minute,
-			SiteBackupVerify:  30 * time.Minute,
-			SiteAppInstall:    10 * time.Minute,
-			SiteAppUpdate:     15 * time.Minute,
+			SiteBackupCreate:     30 * time.Minute,
+			SiteBackupRestore:    30 * time.Minute,
+			SiteBackupVerify:     30 * time.Minute,
+			SiteAppInstall:       10 * time.Minute,
+			SiteAppUpdate:        15 * time.Minute,
+			SiteAppAdminPassword: 3 * time.Minute,
 		},
 		TypeRates: map[string]float64{},
 		ExemptTypes: map[string]bool{

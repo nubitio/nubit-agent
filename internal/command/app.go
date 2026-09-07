@@ -124,6 +124,34 @@ func (p SiteAppUpdatePayload) toRequest() site.AppUpdateRequest {
 	}
 }
 
+// SiteAppAdminPasswordPayload is the site.app.admin-password command payload.
+// A blank password means the agent generates one and returns it once.
+type SiteAppAdminPasswordPayload struct {
+	SiteID    string `json:"siteId"`
+	AdminUser string `json:"adminUser"`
+	Password  string `json:"password"`
+}
+
+func parseSiteAppAdminPassword(payload json.RawMessage) (SiteAppAdminPasswordPayload, error) {
+	var request SiteAppAdminPasswordPayload
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+	if !domainName.MatchString(request.SiteID) {
+		return request, errors.New("site id is invalid")
+	}
+	if !wpAdminUser.MatchString(request.AdminUser) {
+		return request, errors.New("admin user is invalid")
+	}
+	return request, nil
+}
+
+func (p SiteAppAdminPasswordPayload) toRequest() site.AppAdminPasswordRequest {
+	return site.AppAdminPasswordRequest{AdminUser: p.AdminUser, Password: p.Password}
+}
+
 func (p SiteAppInstallPayload) siteURL() string {
 	if p.SiteURL != "" {
 		return p.SiteURL

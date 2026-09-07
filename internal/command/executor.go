@@ -107,6 +107,7 @@ type SiteProvisioner interface {
 	RemoveDomain(siteID, domain string) (site.DomainResult, error)
 	AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error)
 	AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error)
+	AppAdminPassword(siteID string, request site.AppAdminPasswordRequest) (site.AppAdminPasswordResult, error)
 	Delete(siteID string, confirmed bool) (site.DeleteResult, error)
 	RuntimeInventory() ([]site.RuntimeInfo, error)
 	RemoveRuntime(phpVersion string, confirmed bool) (site.RemoveRuntimeResult, error)
@@ -546,6 +547,19 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 			return Result{}, updateErr
 		}
 		output, err = json.Marshal(updated)
+	case SiteAppAdminPassword:
+		request, parseErr := parseSiteAppAdminPassword(command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.sites == nil {
+			return Result{}, errors.New("site provisioner is not configured")
+		}
+		reset, resetErr := executor.sites.AppAdminPassword(request.SiteID, request.toRequest())
+		if resetErr != nil {
+			return Result{}, resetErr
+		}
+		output, err = json.Marshal(reset)
 	case SiteDelete:
 		request, parseErr := parseSiteDelete(command.Payload)
 		if parseErr != nil {

@@ -143,3 +143,20 @@ command is never sent, which satisfies "the site is not touched".
 
 Validation caveat unchanged: unit-tested against a fake `Runner`; a real
 wp-cli + MariaDB run is part of the same follow-up as the install.
+
+## Follow-up: `site.app.admin-password` (2026-09-07)
+
+A third closed command — **`site.app.admin-password`** — backs the portal's
+"reset WordPress admin password" action (nubit-control #29).
+
+- **Payload:** `{siteId, adminUser, password?}`. `adminUser` is validated with
+  the same `^[A-Za-z0-9._@-]{1,60}$` rule as `site.app.install` (an e-mail
+  login is fine); unknown fields are rejected. A blank `password` means the
+  agent generates one.
+- **Execution:** `wp user update <adminUser> --user_pass=<pw> --skip-email` as
+  the site's own Unix user. The site must carry the managed profile
+  (`app == "wordpress"`), pass `wp core is-installed`, and not be suspended.
+- The new password is returned in the result **once** — never logged, never on
+  site state — the same contract as the install password.
+- 3-minute timeout entry; default rate limit. Same fake-`Runner` test coverage
+  and pending real-VM validation as the other two.
