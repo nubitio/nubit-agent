@@ -52,8 +52,8 @@ Add exactly one closed, versioned command: **`site.app.install`**.
   MariaDB — the discipline the web profile already applies to `site.create` —
   is the follow-up before this is enabled on a customer node, tracked in
   `docs/roadmap.md`.
-- **Not in this ADR:** managed core/plugin auto-updates are a separate
-  follow-up (nubit-agent epic #18, agent#5).
+- **Follow-up delivered:** managed core/plugin/theme updates — see
+  "`site.app.update`" below.
 
 ## Follow-up: WordPress Caddy template (agent#4, 2026-09-07)
 
@@ -93,3 +93,53 @@ failed (bad DB credentials, DB unreachable) is not permanently wedged.
 
 Same validation caveat as the install itself: unit-tested against a fake
 `Runner`; real-VM/container validation is pending.
+
+## Follow-up: `site.app.update` (agent#5, 2026-09-07)
+
+A second closed, versioned command — **`site.app.update`** — keeps a managed
+WordPress install current.
+
+- **Payload:** `{siteId, core, plugins, themes, dryRun}`. With no component
+  flag set, all three run. `dryRun` passes `--dry-run` to every wp-cli update.
+- **Execution:** `internal/site.Provisioner.AppUpdate` runs, **as the site's
+  own Unix user**, `wp core update` (then `wp core update-db`, skipped on a dry
+  run), `wp plugin update --all` and `wp theme update --all` for the selected
+  components. The site must already carry the managed profile
+  (`app == "wordpress"`) and pass `wp core is-installed`.
+- **Partial failure is not fatal:** a component that fails is recorded in
+  `components[]` with its error and the run continues with the rest; the
+  result's `ok` is true only when every requested component succeeded. `wp core
+  update` (the files) and `wp core update-db` (the schema migration) are
+  reported as **distinct** outcomes (`core` and `core-db`) so a files-OK /
+  migration-failed run — where only the idempotent `update-db` needs a retry —
+  is not read as "core is broken". The command itself returns an error only for
+  a misuse: unknown site, no managed app, the site is **suspended**, or `wp
+  core is-installed` fails (message says "does not appear to have WordPress
+  installed" and carries the wp-cli error, since a DB blip can also fail that
+  probe).
+- **Payload is strict:** `site.app.update` rejects unknown fields, so a
+  misspelled component key (`plugin` for `plugins`) is an error rather than
+  silently leaving every flag false — which the "no flag ⇒ all three" rule
+  would otherwise widen into a full update.
+- **Version delta:** `core version` is read before and after through an
+  optional `OutputRunner` capability on the runner (`OSRunner` implements it);
+  a runner without it degrades to `ok`/`components` only, `coreBefore`/
+  `coreAfter` empty. The probe runs `--skip-plugins --skip-themes` and the
+  parser takes the last non-empty line, so a tenant notice printed ahead of
+  the value cannot corrupt the reported version.
+- **Limits:** a 15-minute timeout entry (`SiteAppUpdate` in
+  `executor_config.go`); default per-type rate limit.
+
+**Backup before update** is the caller's responsibility: control sequences
+`site.backup.create` ahead of a scheduled `site.app.update` the same way it
+sequences its other backup jobs (ADR-001). `--dry-run` lets control preview a
+run without a backup.
+
+**The per-site auto-update toggle is control-plane state**, not the agent's.
+Control's scheduler decides *whether and when* to emit `site.app.update` for a
+site — exactly as the backup cadence in ADR-001 lives in control. The agent
+holds no `autoUpdate` flag to keep in sync; "auto-update off" simply means the
+command is never sent, which satisfies "the site is not touched".
+
+Validation caveat unchanged: unit-tested against a fake `Runner`; a real
+wp-cli + MariaDB run is part of the same follow-up as the install.

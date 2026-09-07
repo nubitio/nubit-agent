@@ -74,6 +74,10 @@ func (fakeSiteProvisioner) AppInstall(siteID string, request site.AppInstallRequ
 	return site.AppInstallResult{App: request.App, Installed: true, Version: request.Version, AdminUser: request.AdminUser, AdminPassword: "generated"}, nil
 }
 
+func (fakeSiteProvisioner) AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error) {
+	return site.AppUpdateResult{App: "wordpress", DryRun: request.DryRun, OK: true, Components: []site.AppComponentResult{{Component: "core", OK: true}}}, nil
+}
+
 type fakeFilesProvisioner struct{}
 
 func (fakeFilesProvisioner) List(siteID, rel string) (files.ListResult, error) {
@@ -149,6 +153,24 @@ func TestExecutorInspectsSite(t *testing.T) {
 	}
 	if state.PHPVersion != "8.4" {
 		t.Fatalf("unexpected state: %#v", state)
+	}
+}
+
+func TestExecutorDispatchesSiteAppUpdate(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeSiteProvisioner{})
+	result, err := executor.Execute(Command{
+		ID: "cmd_app_update", Type: SiteAppUpdate, Version: 1, IdempotencyKey: "site:app:update",
+		Payload: []byte(`{"siteId":"example.com","dryRun":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out site.AppUpdateResult
+	if err := json.Unmarshal(result.Output, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK || !out.DryRun || out.App != "wordpress" {
+		t.Fatalf("unexpected result: %#v", out)
 	}
 }
 
@@ -378,6 +400,11 @@ func (slow slowSiteProvisioner) AppInstall(siteID string, request site.AppInstal
 	return site.AppInstallResult{App: request.App, Installed: true}, nil
 }
 
+func (slow slowSiteProvisioner) AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error) {
+	time.Sleep(slow.delay)
+	return site.AppUpdateResult{App: "wordpress", OK: true}, nil
+}
+
 // ensure context import is used (the fixture is internal to these tests
 // and uses a select on ctx in helpers; declared here to keep the import).
 var _ = context.Background
@@ -548,6 +575,11 @@ func (counter *counterProvisioner) Reconcile() ([]site.Drift, error) {
 func (counter *counterProvisioner) AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error) {
 	counter.record()
 	return site.AppInstallResult{App: request.App, Installed: true}, nil
+}
+
+func (counter *counterProvisioner) AppUpdate(siteID string, request site.AppUpdateRequest) (site.AppUpdateResult, error) {
+	counter.record()
+	return site.AppUpdateResult{App: "wordpress", OK: true}, nil
 }
 
 func (counter *counterProvisioner) record() {

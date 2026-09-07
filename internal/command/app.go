@@ -89,6 +89,41 @@ func (p SiteAppInstallPayload) toRequest() site.AppInstallRequest {
 	}
 }
 
+// SiteAppUpdatePayload is the site.app.update command payload. With no
+// component flag set, all three (core, plugins, themes) are updated.
+type SiteAppUpdatePayload struct {
+	SiteID  string `json:"siteId"`
+	Core    bool   `json:"core"`
+	Plugins bool   `json:"plugins"`
+	Themes  bool   `json:"themes"`
+	DryRun  bool   `json:"dryRun"`
+}
+
+func parseSiteAppUpdate(payload json.RawMessage) (SiteAppUpdatePayload, error) {
+	var request SiteAppUpdatePayload
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	// A misspelled component key ("plugin" for "plugins") would otherwise leave
+	// every flag false, which components() reads as "update all three" —
+	// silently widening the blast radius. Reject unknown fields instead.
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+	if !domainName.MatchString(request.SiteID) {
+		return request, errors.New("site id is invalid")
+	}
+	return request, nil
+}
+
+func (p SiteAppUpdatePayload) toRequest() site.AppUpdateRequest {
+	return site.AppUpdateRequest{
+		Core:    p.Core,
+		Plugins: p.Plugins,
+		Themes:  p.Themes,
+		DryRun:  p.DryRun,
+	}
+}
+
 func (p SiteAppInstallPayload) siteURL() string {
 	if p.SiteURL != "" {
 		return p.SiteURL

@@ -61,10 +61,7 @@ func (p Provisioner) AppInstall(siteID string, request AppInstallRequest) (AppIn
 		return AppInstallResult{}, errors.New("site state is missing a system user or document root")
 	}
 
-	wp := func(args ...string) error {
-		full := append([]string{"-u", state.SystemUser, "--", "wp", "--path=" + state.DocumentRoot}, args...)
-		return p.Runner.Run("sudo", full...)
-	}
+	wp := func(args ...string) error { return p.Runner.Run("sudo", wpArgv(state, args...)...) }
 
 	// Idempotency: a non-zero exit means "not installed", which is exactly
 	// when there is work to do.
@@ -180,4 +177,162 @@ func generatePassword() string {
 		return strings.Repeat("x", 24)
 	}
 	return hex.EncodeToString(buf)
+}
+
+// wpArgv builds the argv for running wp-cli as a site's own Unix user:
+// `sudo -u <systemUser> -- wp --path=<documentRoot> <args...>`. Both AppInstall
+// and AppUpdate go through it so the tenant-drop invocation has one definition.
+func wpArgv(state State, args ...string) []string {
+	return append([]string{"-u", state.SystemUser, "--", "wp", "--path=" + state.DocumentRoot}, args...)
+}
+
+// OutputRunner is an optional Runner capability: it returns a command's stdout.
+// AppUpdate uses it to read `wp core version` before and after so the result
+// can report the version delta; a Runner that does not implement it degrades
+// to exit-code-only reporting (CoreBefore/CoreAfter left empty).
+type OutputRunner interface {
+	Output(name string, args ...string) ([]byte, error)
+}
+
+// AppUpdateRequest selects which parts of a managed WordPress install to
+// update. A zero value (no component set) means all three.
+type AppUpdateRequest struct {
+	Core    bool
+	Plugins bool
+	Themes  bool
+	// DryRun passes --dry-run to every wp-cli update so control can preview
+	// what a run would change without touching the site.
+	DryRun bool
+}
+
+func (r AppUpdateRequest) components() (core, plugins, themes bool) {
+	if !r.Core && !r.Plugins && !r.Themes {
+		return true, true, true
+	}
+	return r.Core, r.Plugins, r.Themes
+}
+
+// AppComponentResult is the outcome of one step. Component is one of "core"
+// (the `wp core update` of the files), "core-db" (the `wp core update-db`
+// schema migration, reported separately so a files-OK / migration-failed run
+// is distinguishable), "plugins" or "themes".
+type AppComponentResult struct {
+	Component string `json:"component"`
+	OK        bool   `json:"ok"`
+	Detail    string `json:"detail,omitempty"` // error text when OK is false
+}
+
+// AppUpdateResult reports what site.app.update did. OK is true only when every
+// requested component updated cleanly.
+type AppUpdateResult struct {
+	App        string               `json:"app"`
+	DryRun     bool                 `json:"dryRun,omitempty"`
+	CoreBefore string               `json:"coreBefore,omitempty"`
+	CoreAfter  string               `json:"coreAfter,omitempty"`
+	Components []AppComponentResult `json:"components"`
+	OK         bool                 `json:"ok"`
+}
+
+// AppUpdate runs `wp core update` (+ `core update-db`), `wp plugin update
+// --all` and `wp theme update --all` as the site's own Unix user, for the
+// components the request selects. A component failure is recorded and the run
+// continues with the others; the result's OK reflects whether every requested
+// component succeeded. The site must already carry a managed WordPress install
+// (app == "wordpress", `wp core is-installed`).
+//
+// Taking a backup first is the caller's responsibility: control sequences
+// site.backup.create ahead of a scheduled site.app.update the same way it
+// sequences its other backup jobs. Whether a site is updated on a schedule at
+// all — the per-site auto-update toggle — is control-plane state; this command
+// only executes.
+func (p Provisioner) AppUpdate(siteID string, request AppUpdateRequest) (AppUpdateResult, error) {
+	if p.Runner == nil || p.Store == nil {
+		return AppUpdateResult{}, errors.New("site provisioner is not configured")
+	}
+	state, found := p.Store.Get(siteID)
+	if !found {
+		return AppUpdateResult{}, fmt.Errorf("site %q is not known to this node", siteID)
+	}
+	if state.SystemUser == "" || state.DocumentRoot == "" {
+		return AppUpdateResult{}, errors.New("site state is missing a system user or document root")
+	}
+	if state.App != "wordpress" {
+		return AppUpdateResult{}, fmt.Errorf("site %q has no managed WordPress install", siteID)
+	}
+	if state.Status == "suspended" {
+		return AppUpdateResult{}, fmt.Errorf("site %q is suspended; not updating it", siteID)
+	}
+
+	wp := func(args ...string) error { return p.Runner.Run("sudo", wpArgv(state, args...)...) }
+	// wpValue reads a single scalar from wp-cli (e.g. `core version`). It runs
+	// with --skip-plugins --skip-themes so tenant code cannot print notices
+	// ahead of the value, and returns the last non-empty line in case
+	// something slips through anyway.
+	wpValue := func(args ...string) string {
+		runner, ok := p.Runner.(OutputRunner)
+		if !ok {
+			return ""
+		}
+		out, err := runner.Output("sudo", wpArgv(state, append(args, "--skip-plugins", "--skip-themes")...)...)
+		if err != nil {
+			return ""
+		}
+		return lastNonEmptyLine(string(out))
+	}
+
+	if err := wp("core", "is-installed"); err != nil {
+		return AppUpdateResult{}, fmt.Errorf("site %q does not appear to have WordPress installed (wp core is-installed failed: %w)", siteID, err)
+	}
+
+	core, plugins, themes := request.components()
+	result := AppUpdateResult{App: "wordpress", DryRun: request.DryRun, OK: true}
+	result.CoreBefore = wpValue("core", "version")
+
+	dry := func(args ...string) []string {
+		if request.DryRun {
+			return append(args, "--dry-run")
+		}
+		return args
+	}
+	record := func(component string, err error) {
+		item := AppComponentResult{Component: component, OK: err == nil}
+		if err != nil {
+			item.Detail = err.Error()
+			result.OK = false
+		}
+		result.Components = append(result.Components, item)
+	}
+
+	if core {
+		coreErr := wp(dry("core", "update")...)
+		record("core", coreErr)
+		if coreErr == nil && !request.DryRun {
+			// The schema migration a core update may need. Idempotent and
+			// safely re-runnable, so it is a distinct outcome: a failure here
+			// does not mean the core files are bad.
+			record("core-db", wp("core", "update-db"))
+		}
+	}
+	if plugins {
+		record("plugins", wp(dry("plugin", "update", "--all")...))
+	}
+	if themes {
+		record("themes", wp(dry("theme", "update", "--all")...))
+	}
+
+	result.CoreAfter = wpValue("core", "version")
+	return result, nil
+}
+
+// lastNonEmptyLine returns the last non-blank line of s, trimmed. wp-cli prints
+// the value it is asked for last, so this survives a stray notice line before
+// it.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }

@@ -52,6 +52,13 @@ dirs and — via `path_regexp` — PHP anywhere under `wp-content/uploads`, 7-da
 non-immutable static cache) and records `app: "wordpress"` on site state so
 `applyDomains` and `Reconcile` keep it. A Caddy failure after install is a
 "hardening deferred" note on the result, not an install failure.
+
+A second command, `site.app.update` (ADR-005 follow-up), runs `wp
+core/plugin/theme update` as the site user with optional `--dry-run` and
+per-component selection; a component failure is a reported result, not a
+command error, and the `core` version delta is read via an optional
+`OutputRunner`. The per-site auto-update toggle and backup-before-update are
+control-plane concerns — the agent only executes.
 Real-VM / disposable-container validation against wp-cli + MariaDB is the
 follow-up before it runs on a customer node; managed core/plugin auto-updates
 are separate.

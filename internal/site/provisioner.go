@@ -28,6 +28,17 @@ func (OSRunner) Run(name string, args ...string) error {
 	return nil
 }
 
+// Output runs the command and returns its stdout, satisfying OutputRunner so
+// AppUpdate can read `wp core version`.
+func (OSRunner) Output(name string, args ...string) ([]byte, error) {
+	command := exec.Command(name, args...)
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return output, nil
+}
+
 type Layout struct {
 	SitesDir, CaddyConfigDir, CaddyDisabledDir, CaddyMainConfig, PHPConfigRoot, PHPConfigDir, PHPBinaryDir, StagingDir string
 }
