@@ -36,6 +36,12 @@ type State struct {
 	// change, a drift check — rebuilds it with the limits the site was sold,
 	// instead of quietly resetting it to the default tier.
 	Resources Resources `json:"resources"`
+	// App is the managed application installed into the document root, set by
+	// site.app.install ("wordpress"). It selects the Caddy vhost template so
+	// domain edits and drift checks regenerate the hardened WordPress vhost
+	// rather than resetting it to the plain PHP-FastCGI one. Empty for a
+	// site serving its own files.
+	App string `json:"app,omitempty"`
 }
 
 type StateStore interface {

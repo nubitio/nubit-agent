@@ -52,6 +52,26 @@ Add exactly one closed, versioned command: **`site.app.install`**.
   MariaDB — the discipline the web profile already applies to `site.create` —
   is the follow-up before this is enabled on a customer node, tracked in
   `docs/roadmap.md`.
-- **Not in this ADR:** the WordPress-tuned Caddy template (permalinks, static
-  caching, `xmlrpc`/`wp-login` hardening) and managed core/plugin auto-updates
-  are separate follow-ups; `site.app.install` only installs.
+- **Not in this ADR:** managed core/plugin auto-updates are a separate
+  follow-up (nubit-agent epic #18, agent#5).
+
+## Follow-up: WordPress Caddy template (agent#4, 2026-09-07)
+
+`site.app.install` now re-renders the site's Caddy vhost as its final step on a
+successful install, using `CaddyConfigWordPress` instead of the plain
+PHP-FastCGI `CaddyConfig`:
+
+- `respond @blocked 403` for `/xmlrpc.php`, `/wp-config.php`,
+  `/wp-content/uploads/*.php`, `*.sql`/`*.bak`/`*.log`, and `.git`/`.svn`/`.env`.
+- `Cache-Control: public, max-age=2592000, immutable` on static assets
+  (`*.css`, `*.js`, images, fonts).
+- Permalinks need no extra rule — Caddy's `php_fastcgi` already falls through to
+  `index.php`.
+
+The profile is stored as `app: "wordpress"` on site state so `applyDomains`
+(domain add/remove) and `Reconcile` (drift check) regenerate the hardened
+template rather than resetting the vhost to the plain one. The re-render
+validates the staged config, activates it, reloads Caddy, and rolls the
+previous vhost back on any failure. Same validation caveat as the install
+itself: unit-tested against a fake `Runner`; real-VM/container validation is
+pending.

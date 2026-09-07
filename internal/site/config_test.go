@@ -13,6 +13,37 @@ func TestLocalhostAliasIsOptional(t *testing.T) {
 	}
 }
 
+func TestWordPressVhostIsHardenedAndCachesStatics(t *testing.T) {
+	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "")
+	caddy := CaddyConfigWordPress("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")
+
+	// still a PHP-FastCGI site on the pool socket
+	if !strings.Contains(caddy, "php_fastcgi unix/site-example.sock") {
+		t.Fatalf("wordpress vhost lost its FastCGI upstream:\n%s", caddy)
+	}
+	// the sensitive paths a WordPress install exposes are answered with 403
+	for _, blocked := range []string{"/xmlrpc.php", "/wp-config.php", "/wp-content/uploads/*.php", "/.git/*"} {
+		if !strings.Contains(caddy, blocked) {
+			t.Fatalf("wordpress vhost does not block %q:\n%s", blocked, caddy)
+		}
+	}
+	if !strings.Contains(caddy, "respond @blocked 403") {
+		t.Fatalf("blocked paths are not denied:\n%s", caddy)
+	}
+	// static assets get a long, immutable cache header
+	if !strings.Contains(caddy, `header @static Cache-Control "public, max-age=2592000, immutable"`) {
+		t.Fatalf("static assets are not cached:\n%s", caddy)
+	}
+}
+
+func TestWordPressVhostKeepsTheLocalhostAlias(t *testing.T) {
+	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "1")
+	caddy := CaddyConfigWordPress("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")
+	if !strings.Contains(caddy, "http://example.com.localhost") {
+		t.Fatalf("expected localhost alias: %s", caddy)
+	}
+}
+
 func TestSiteConfigsUseIsolatedPaths(t *testing.T) {
 	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "")
 	caddy := CaddyConfig("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")

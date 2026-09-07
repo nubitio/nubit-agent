@@ -250,7 +250,7 @@ func (p Provisioner) applyDomains(state State) error {
 	if err := os.MkdirAll(layout.StagingDir, 0o700); err != nil {
 		return err
 	}
-	config := []byte(CaddyConfig(strings.Join(domainsFor(state), ", "), state.DocumentRoot, state.PHPSocket))
+	config := caddyConfigFor(state)
 	staged, err := stageFile(layout.StagingDir, "caddy-domains-", config)
 	if err != nil {
 		return err
@@ -287,6 +287,18 @@ func domainsFor(state State) []string {
 		return []string{state.Domain}
 	}
 	return append([]string(nil), state.Domains...)
+}
+
+// caddyConfigFor renders the site's vhost with the template that matches its
+// app profile: a WordPress site gets the hardened template, every other site
+// the plain PHP-FastCGI one. Every path that regenerates the vhost — a domain
+// edit, a drift check — goes through here so the profile is never lost.
+func caddyConfigFor(state State) []byte {
+	domains := strings.Join(domainsFor(state), ", ")
+	if state.App == "wordpress" {
+		return []byte(CaddyConfigWordPress(domains, state.DocumentRoot, state.PHPSocket))
+	}
+	return []byte(CaddyConfig(domains, state.DocumentRoot, state.PHPSocket))
 }
 
 type LifecycleResult struct {
@@ -730,7 +742,7 @@ func (p Provisioner) Reconcile() ([]Drift, error) {
 			}
 		}
 		if contents, err := os.ReadFile(caddyPath); err == nil {
-			expected := []byte(CaddyConfig(strings.Join(domainsFor(state), ", "), state.DocumentRoot, state.PHPSocket))
+			expected := caddyConfigFor(state)
 			if sha256.Sum256(contents) != sha256.Sum256(expected) {
 				drifts = append(drifts, Drift{state.SiteID, "caddyConfig", fmt.Sprintf("sha256:%x", sha256.Sum256(expected)), fmt.Sprintf("sha256:%x", sha256.Sum256(contents))})
 			}

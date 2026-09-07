@@ -24,6 +24,50 @@ func CaddyConfig(domain, root, socket string) string {
 	return fmt.Sprintf("%s {\n\troot * %s\n\tphp_fastcgi unix/%s\n\tfile_server\n\tlog {\n\t\toutput file %s\n\t}\n}\n", strings.Join(hosts, ", "), root, socket, logFile)
 }
 
+// CaddyConfigWordPress is the vhost for a managed-WordPress site: the same
+// PHP-FastCGI serving as CaddyConfig plus WordPress-shaped hardening (block
+// xmlrpc.php and the config/VCS/dotfiles, deny PHP under uploads) and a long
+// cache header on static assets. Caddy's php_fastcgi already does the
+// permalink try_files for index.php, so that is not repeated here.
+func CaddyConfigWordPress(domain, root, socket string) string {
+	parts := strings.Split(domain, ", ")
+	hosts := parts
+	if v := os.Getenv("NUBIT_SITE_LOCALHOST_ALIAS"); v == "1" || v == "true" {
+		hosts = nil
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			hosts = append(hosts, part, "http://"+part+".localhost")
+		}
+	}
+	logFile := "/var/log/nubit/" + strings.ReplaceAll(parts[0], "/", "_") + ".caddy.log"
+
+	return fmt.Sprintf(`%s {
+	root * %s
+
+	@blocked {
+		path /xmlrpc.php
+		path /wp-config.php
+		path /.git/* /.svn/* /.env
+		path /wp-content/uploads/*.php
+		path *.sql *.bak *.log
+	}
+	respond @blocked 403
+
+	@static path *.css *.js *.mjs *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.woff *.woff2 *.ttf *.eot
+	header @static Cache-Control "public, max-age=2592000, immutable"
+
+	php_fastcgi unix/%s
+	file_server
+	log {
+		output file %s
+	}
+}
+`, strings.Join(hosts, ", "), root, socket, logFile)
+}
+
 // WebServerUser is the account Caddy runs as under its Debian package.
 //
 // It is the only account besides the tenant's own that is given a way into a

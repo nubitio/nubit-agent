@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -87,6 +89,14 @@ func (p Provisioner) AppInstall(siteID string, request AppInstallRequest) (AppIn
 		return AppInstallResult{}, fmt.Errorf("wp core install: %w", err)
 	}
 
+	// The site is now a WordPress site: re-render its vhost with the hardened
+	// template (xmlrpc/wp-config blocked, PHP denied under uploads, static
+	// assets cached) and mark the profile on state so later domain edits and
+	// drift checks keep it.
+	if err := p.applyWordPressVhost(state); err != nil {
+		return AppInstallResult{}, fmt.Errorf("apply wordpress vhost: %w", err)
+	}
+
 	return AppInstallResult{
 		App:           request.App,
 		Installed:     true,
@@ -95,6 +105,58 @@ func (p Provisioner) AppInstall(siteID string, request AppInstallRequest) (AppIn
 		AdminUser:     request.AdminUser,
 		AdminPassword: password,
 	}, nil
+}
+
+// applyWordPressVhost re-renders the site's Caddy vhost with the hardened
+// WordPress template, validates it, activates it and reloads Caddy. It is the
+// final step of a successful install; on any failure the previous vhost is put
+// back. State is saved with App="wordpress" so applyDomains and Reconcile
+// regenerate the same template from then on.
+func (p Provisioner) applyWordPressVhost(state State) error {
+	layout := p.layoutFor(state.PHPVersion)
+	path := filepath.Join(layout.CaddyConfigDir, state.Domain+".caddy")
+	if state.Status == "suspended" {
+		path = filepath.Join(layout.CaddyDisabledDir, state.Domain+".caddy")
+	}
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read current vhost: %w", err)
+	}
+	if err := os.MkdirAll(layout.StagingDir, 0o700); err != nil {
+		return err
+	}
+
+	state.App = "wordpress"
+	staged, err := stageFile(layout.StagingDir, "caddy-wordpress-", caddyConfigFor(state))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(staged)
+
+	if err := p.run("caddy", "validate", "--adapter", "caddyfile", "--config", staged); err != nil {
+		return err
+	}
+	if err := activateFile(staged, path); err != nil {
+		return err
+	}
+	rollback := func() { _ = activateContents(previous, path) }
+	if state.Status != "suspended" {
+		if layout.CaddyMainConfig != "" {
+			if err := p.run("caddy", "validate", "--adapter", "caddyfile", "--config", layout.CaddyMainConfig); err != nil {
+				rollback()
+				return err
+			}
+		}
+		if err := p.run("systemctl", "reload", "caddy"); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if err := p.Store.Save(state); err != nil {
+		rollback()
+		return err
+	}
+	return nil
 }
 
 func downloadArgs(request AppInstallRequest) []string {

@@ -44,7 +44,11 @@ every operational claim about them stay under the rule above.
 
 **Carve-out (`site.app.install`, ADR-005).** One closed command that installs
 WordPress into an existing site's document root via wp-cli, as the site's own
-Unix user. Payload-validated, idempotent, tested against a fake `Runner`.
+Unix user. Payload-validated, idempotent, tested against a fake `Runner`. On a
+successful install it also re-renders the site's Caddy vhost with the hardened
+WordPress template (`CaddyConfigWordPress`: blocks `xmlrpc.php`/`wp-config.php`/
+`wp-content/uploads/*.php`/VCS dirs, caches static assets) and records
+`app: "wordpress"` on site state so `applyDomains` and `Reconcile` keep it.
 Real-VM / disposable-container validation against wp-cli + MariaDB is the
-follow-up before it runs on a customer node; the WordPress Caddy template and
-auto-updates are separate.
+follow-up before it runs on a customer node; managed core/plugin auto-updates
+are separate.
