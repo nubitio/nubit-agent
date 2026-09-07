@@ -101,7 +101,12 @@ type SiteAppUpdatePayload struct {
 
 func parseSiteAppUpdate(payload json.RawMessage) (SiteAppUpdatePayload, error) {
 	var request SiteAppUpdatePayload
-	if err := json.Unmarshal(payload, &request); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	// A misspelled component key ("plugin" for "plugins") would otherwise leave
+	// every flag false, which components() reads as "update all three" —
+	// silently widening the blast radius. Reject unknown fields instead.
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
 		return request, err
 	}
 	if !domainName.MatchString(request.SiteID) {

@@ -81,6 +81,14 @@ func TestParseSiteAppUpdateRejectsABadSiteId(t *testing.T) {
 	}
 }
 
+// A misspelled component key must not silently fall through to "update all".
+func TestParseSiteAppUpdateRejectsUnknownFields(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "plugin": true})
+	if _, err := parseSiteAppUpdate(raw); err == nil {
+		t.Fatal("expected an unknown field to be rejected")
+	}
+}
+
 func TestParseSiteAppInstallRejectsBadInput(t *testing.T) {
 	cases := map[string]func(m map[string]any){
 		"non-wordpress app": func(m map[string]any) { m["app"] = "joomla" },

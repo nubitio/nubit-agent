@@ -369,7 +369,7 @@ func TestAppUpdateRunsCorePluginsThemesAsTheSiteUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.OK || len(result.Components) != 3 {
+	if !result.OK || len(result.Components) != 4 { // core, core-db, plugins, themes
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	want := map[string]bool{"core update": false, "plugin update": false, "theme update": false, "core update-db": false}
@@ -478,6 +478,45 @@ func TestAppUpdateDryRunPassesTheFlagAndSkipsUpdateDB(t *testing.T) {
 	}
 	if !dryCore {
 		t.Fatalf("core update did not get --dry-run: %#v", runner.calls)
+	}
+}
+
+func TestAppUpdateReportsCoreAndCoreDbAsDistinctOutcomes(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	runner.failSub = "core update-db"
+
+	result, err := p.AppUpdate("example.com", AppUpdateRequest{Core: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]AppComponentResult{}
+	for _, c := range result.Components {
+		byName[c.Component] = c
+	}
+	if !byName["core"].OK {
+		t.Fatalf("core files should be OK when only update-db failed: %#v", result.Components)
+	}
+	if byName["core-db"].OK || byName["core-db"].Detail == "" {
+		t.Fatalf("core-db failure not reported distinctly: %#v", result.Components)
+	}
+	if result.OK {
+		t.Fatalf("overall result should be not-OK: %#v", result)
+	}
+}
+
+func TestAppUpdateRefusesASuspendedSite(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	state, _ := p.Store.Get("example.com")
+	state.Status = "suspended"
+	if err := p.Store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.AppUpdate("example.com", AppUpdateRequest{}); err == nil {
+		t.Fatal("expected a suspended site to be refused")
 	}
 }
 

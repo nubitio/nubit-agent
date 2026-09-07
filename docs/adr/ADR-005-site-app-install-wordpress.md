@@ -108,13 +108,25 @@ WordPress install current.
   (`app == "wordpress"`) and pass `wp core is-installed`.
 - **Partial failure is not fatal:** a component that fails is recorded in
   `components[]` with its error and the run continues with the rest; the
-  result's `ok` is true only when every requested component succeeded. The
-  command itself returns an error only for a misuse (unknown site, no managed
-  app, WordPress not installed).
+  result's `ok` is true only when every requested component succeeded. `wp core
+  update` (the files) and `wp core update-db` (the schema migration) are
+  reported as **distinct** outcomes (`core` and `core-db`) so a files-OK /
+  migration-failed run — where only the idempotent `update-db` needs a retry —
+  is not read as "core is broken". The command itself returns an error only for
+  a misuse: unknown site, no managed app, the site is **suspended**, or `wp
+  core is-installed` fails (message says "does not appear to have WordPress
+  installed" and carries the wp-cli error, since a DB blip can also fail that
+  probe).
+- **Payload is strict:** `site.app.update` rejects unknown fields, so a
+  misspelled component key (`plugin` for `plugins`) is an error rather than
+  silently leaving every flag false — which the "no flag ⇒ all three" rule
+  would otherwise widen into a full update.
 - **Version delta:** `core version` is read before and after through an
   optional `OutputRunner` capability on the runner (`OSRunner` implements it);
   a runner without it degrades to `ok`/`components` only, `coreBefore`/
-  `coreAfter` empty.
+  `coreAfter` empty. The probe runs `--skip-plugins --skip-themes` and the
+  parser takes the last non-empty line, so a tenant notice printed ahead of
+  the value cannot corrupt the reported version.
 - **Limits:** a 15-minute timeout entry (`SiteAppUpdate` in
   `executor_config.go`); default per-type rate limit.
 
