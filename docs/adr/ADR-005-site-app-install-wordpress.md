@@ -57,21 +57,39 @@ Add exactly one closed, versioned command: **`site.app.install`**.
 
 ## Follow-up: WordPress Caddy template (agent#4, 2026-09-07)
 
-`site.app.install` now re-renders the site's Caddy vhost as its final step on a
-successful install, using `CaddyConfigWordPress` instead of the plain
-PHP-FastCGI `CaddyConfig`:
+`site.app.install` re-renders the site's Caddy vhost after a successful install,
+using `CaddyConfigWordPress` instead of the plain PHP-FastCGI `CaddyConfig`:
 
-- `respond @blocked 403` for `/xmlrpc.php`, `/wp-config.php`,
-  `/wp-content/uploads/*.php`, `*.sql`/`*.bak`/`*.log`, and `.git`/`.svn`/`.env`.
-- `Cache-Control: public, max-age=2592000, immutable` on static assets
-  (`*.css`, `*.js`, images, fonts).
+- `respond @forbidden 403` for `/xmlrpc.php`, `/wp-config.php`,
+  `*.sql`/`*.bak`/`*.log`, and `.git`/`.svn`/`.env`.
+- a second `respond @uploads_php 403` matched by `path_regexp`
+  (`^/wp-content/uploads/.*\.(php|phtml|phar|php[0-9])$`) so PHP dropped into
+  the *dated* upload subdirectories WordPress writes to is denied too, not just
+  the top level.
+- `Cache-Control: public, max-age=604800` (7 days, **not** `immutable`) on
+  static assets (`*.css`, `*.js`, images, fonts) so a managed host can still
+  bust the cache after a plugin update.
 - Permalinks need no extra rule — Caddy's `php_fastcgi` already falls through to
   `index.php`.
 
 The profile is stored as `app: "wordpress"` on site state so `applyDomains`
 (domain add/remove) and `Reconcile` (drift check) regenerate the hardened
-template rather than resetting the vhost to the plain one. The re-render
-validates the staged config, activates it, reloads Caddy, and rolls the
-previous vhost back on any failure. Same validation caveat as the install
-itself: unit-tested against a fake `Runner`; real-VM/container validation is
-pending.
+template rather than resetting the vhost to the plain one. The swap reuses
+`applyDomains` (stage → `caddy validate` → activate → reload, with rollback) so
+the protocol lives in one place.
+
+**Degradation:** the vhost swap is *not* part of the install's success
+condition. `wp core install` consumes the generated admin password, which the
+command result carries exactly once; a transient Caddy/reload failure after
+that point would otherwise lose it. So the profile is persisted first (a failed
+swap then shows as drift) and a swap failure is reported in the result's
+`reason` as "hardening deferred" with `installed: true` — a later
+`system.reconcile` or a re-run (which hits the already-present path and
+re-applies the vhost) converges it.
+
+**Retry safety:** `wp core download` and `wp config create` run with `--force`
+so a run that got as far as writing `wp-config.php` before `wp core install`
+failed (bad DB credentials, DB unreachable) is not permanently wedged.
+
+Same validation caveat as the install itself: unit-tested against a fake
+`Runner`; real-VM/container validation is pending.

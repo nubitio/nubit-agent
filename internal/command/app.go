@@ -13,7 +13,12 @@ import (
 var wpVersion = regexp.MustCompile(`^(latest|[0-9]+(\.[0-9]+){0,2})?$`)
 var wpLocale = regexp.MustCompile(`^[a-z]{2}(_[A-Z]{2})?$`)
 var emailAddress = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-var unixUserName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// wpAdminUser is the WordPress admin login, which has no relation to any Unix
+// account: it allows mixed case and `_ . @ -` so an email address or a name
+// like "Admin" is accepted. It is passed to `wp core install --admin_user` as
+// a single argv entry, never to a shell.
+var wpAdminUser = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,60}$`)
 
 // SiteAppInstallPayload is the site.app.install command payload. `app` is
 // restricted to "wordpress" (any other value fails closed); the database
@@ -50,7 +55,7 @@ func parseSiteAppInstall(payload json.RawMessage) (SiteAppInstallPayload, error)
 	if request.Locale != "" && !wpLocale.MatchString(request.Locale) {
 		return request, errors.New("locale is invalid")
 	}
-	if !unixUserName.MatchString(request.AdminUser) {
+	if !wpAdminUser.MatchString(request.AdminUser) {
 		return request, errors.New("admin user is invalid")
 	}
 	if !emailAddress.MatchString(request.AdminEmail) {

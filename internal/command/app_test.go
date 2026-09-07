@@ -40,6 +40,16 @@ func TestParseSiteAppInstallAcceptsAValidPayload(t *testing.T) {
 	}
 }
 
+func TestParseSiteAppInstallAcceptsAnEmailOrMixedCaseAdminUser(t *testing.T) {
+	for _, user := range []string{"owner@example.com", "Admin", "admin.user-1"} {
+		body := validAppInstallPayload()
+		body["adminUser"] = user
+		if _, err := parsePayload(t, body); err != nil {
+			t.Fatalf("admin user %q should be accepted: %v", user, err)
+		}
+	}
+}
+
 func TestParseSiteAppInstallDefaultsTheURLFromTheSiteID(t *testing.T) {
 	body := validAppInstallPayload()
 	delete(body, "siteUrl")
@@ -58,7 +68,7 @@ func TestParseSiteAppInstallRejectsBadInput(t *testing.T) {
 		"bad site id":       func(m map[string]any) { m["siteId"] = "not a domain" },
 		"bad version":       func(m map[string]any) { m["version"] = "6.x" },
 		"bad locale":        func(m map[string]any) { m["locale"] = "spanish" },
-		"bad admin user":    func(m map[string]any) { m["adminUser"] = "Admin User" },
+		"bad admin user":    func(m map[string]any) { m["adminUser"] = "admin user!" },
 		"bad admin email":   func(m map[string]any) { m["adminEmail"] = "owner" },
 		"missing title":     func(m map[string]any) { delete(m, "siteTitle") },
 		"missing db":        func(m map[string]any) { delete(m, "dbName") },

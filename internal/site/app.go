@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -71,9 +69,22 @@ func (p Provisioner) AppInstall(siteID string, request AppInstallRequest) (AppIn
 	// Idempotency: a non-zero exit means "not installed", which is exactly
 	// when there is work to do.
 	if wp("core", "is-installed") == nil {
-		return AppInstallResult{App: request.App, Installed: false, Reason: "already-present"}, nil
+		result := AppInstallResult{App: request.App, Installed: false, Reason: "already-present"}
+		// A WordPress site that predates this command — or one whose earlier
+		// hardening step failed — still gets the hardened vhost.
+		if state.App != "wordpress" {
+			if err := p.ensureWordPressProfile(state); err != nil {
+				result.Reason = "already-present; caddy hardening deferred: " + err.Error()
+			} else {
+				result.Reason = "already-present; caddy hardening applied"
+			}
+		}
+		return result, nil
 	}
 
+	// core download / config create run with --force so a retry after a
+	// partially completed install (files downloaded, wp-config written, then
+	// `core install` failed) is not permanently wedged.
 	if err := wp(downloadArgs(request)...); err != nil {
 		return AppInstallResult{}, fmt.Errorf("wp core download: %w", err)
 	}
@@ -89,78 +100,41 @@ func (p Provisioner) AppInstall(siteID string, request AppInstallRequest) (AppIn
 		return AppInstallResult{}, fmt.Errorf("wp core install: %w", err)
 	}
 
-	// The site is now a WordPress site: re-render its vhost with the hardened
-	// template (xmlrpc/wp-config blocked, PHP denied under uploads, static
-	// assets cached) and mark the profile on state so later domain edits and
-	// drift checks keep it.
-	if err := p.applyWordPressVhost(state); err != nil {
-		return AppInstallResult{}, fmt.Errorf("apply wordpress vhost: %w", err)
-	}
-
-	return AppInstallResult{
+	// The install succeeded and its password is now the only copy; the vhost
+	// swap must not be able to lose it. Record the profile and harden, but a
+	// transient Caddy/reload failure only defers the hardening (drift detection
+	// and a retry via the already-present path converge it) — it is not an
+	// install failure.
+	result := AppInstallResult{
 		App:           request.App,
 		Installed:     true,
 		Version:       request.Version,
 		URL:           request.SiteURL,
 		AdminUser:     request.AdminUser,
 		AdminPassword: password,
-	}, nil
+	}
+	if err := p.ensureWordPressProfile(state); err != nil {
+		result.Reason = "installed; caddy hardening deferred: " + err.Error()
+	}
+	return result, nil
 }
 
-// applyWordPressVhost re-renders the site's Caddy vhost with the hardened
-// WordPress template, validates it, activates it and reloads Caddy. It is the
-// final step of a successful install; on any failure the previous vhost is put
-// back. State is saved with App="wordpress" so applyDomains and Reconcile
-// regenerate the same template from then on.
-func (p Provisioner) applyWordPressVhost(state State) error {
-	layout := p.layoutFor(state.PHPVersion)
-	path := filepath.Join(layout.CaddyConfigDir, state.Domain+".caddy")
-	if state.Status == "suspended" {
-		path = filepath.Join(layout.CaddyDisabledDir, state.Domain+".caddy")
-	}
-	previous, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read current vhost: %w", err)
-	}
-	if err := os.MkdirAll(layout.StagingDir, 0o700); err != nil {
-		return err
-	}
-
+// ensureWordPressProfile records app="wordpress" on the site and re-renders its
+// Caddy vhost with the hardened template. It reuses applyDomains (stage → caddy
+// validate → activate → reload, with rollback) so the vhost-swap protocol lives
+// in exactly one place; caddyConfigFor picks the WordPress template once App is
+// set. Saving the profile first means a later failure of the swap still shows
+// as drift.
+func (p Provisioner) ensureWordPressProfile(state State) error {
 	state.App = "wordpress"
-	staged, err := stageFile(layout.StagingDir, "caddy-wordpress-", caddyConfigFor(state))
-	if err != nil {
-		return err
-	}
-	defer os.Remove(staged)
-
-	if err := p.run("caddy", "validate", "--adapter", "caddyfile", "--config", staged); err != nil {
-		return err
-	}
-	if err := activateFile(staged, path); err != nil {
-		return err
-	}
-	rollback := func() { _ = activateContents(previous, path) }
-	if state.Status != "suspended" {
-		if layout.CaddyMainConfig != "" {
-			if err := p.run("caddy", "validate", "--adapter", "caddyfile", "--config", layout.CaddyMainConfig); err != nil {
-				rollback()
-				return err
-			}
-		}
-		if err := p.run("systemctl", "reload", "caddy"); err != nil {
-			rollback()
-			return err
-		}
-	}
 	if err := p.Store.Save(state); err != nil {
-		rollback()
 		return err
 	}
-	return nil
+	return p.applyDomains(state)
 }
 
 func downloadArgs(request AppInstallRequest) []string {
-	args := []string{"core", "download"}
+	args := []string{"core", "download", "--force"}
 	if request.Version != "" {
 		args = append(args, "--version="+request.Version)
 	}
@@ -182,6 +156,7 @@ func configArgs(request AppInstallRequest) []string {
 		"--dbpass=" + request.DBPassword,
 		"--dbhost=" + host,
 		"--skip-check",
+		"--force",
 	}
 }
 

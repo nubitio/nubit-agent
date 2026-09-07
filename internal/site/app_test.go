@@ -128,7 +128,7 @@ func TestAppInstallRunsWpCliAsTheSiteUserAndReturnsAPassword(t *testing.T) {
 	}
 }
 
-func TestAppInstallIsANoOpWhenWordPressIsAlreadyPresent(t *testing.T) {
+func TestAppInstallDoesNotReinstallWhenWordPressIsAlreadyPresent(t *testing.T) {
 	p, runner := newSite(t)
 	runner.isInstalled = true
 
@@ -139,8 +139,62 @@ func TestAppInstallIsANoOpWhenWordPressIsAlreadyPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Installed || result.Reason != "already-present" {
-		t.Fatalf("expected no-op, got %#v", result)
+	if result.Installed {
+		t.Fatalf("expected no reinstall, got %#v", result)
+	}
+	if !strings.HasPrefix(result.Reason, "already-present") {
+		t.Fatalf("reason = %q, want an already-present reason", result.Reason)
+	}
+	// The only wp-cli call is the is-installed probe: no download/config/install.
+	if wp := wpCalls(runner.calls); len(wp) != 1 {
+		t.Fatalf("expected only the is-installed probe, got %#v", wp)
+	}
+}
+
+// A WordPress site whose earlier hardening step failed (or that predates this
+// command) still gets the hardened vhost on the next call, even though the
+// install itself is a no-op.
+func TestAppInstallHardensAnAlreadyPresentSiteThatIsNotYetMarked(t *testing.T) {
+	p, _ := newSite(t)
+
+	runner := &wpRunner{isInstalled: true}
+	p.Runner = runner
+
+	result, err := p.AppInstall("example.com", AppInstallRequest{
+		App: "wordpress", AdminUser: "admin", AdminEmail: "a@example.com",
+		SiteTitle: "x", SiteURL: "https://example.com", DBName: "d", DBUser: "u",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != "already-present; caddy hardening applied" {
+		t.Fatalf("reason = %q", result.Reason)
+	}
+	state, _ := p.Store.Get("example.com")
+	if state.App != "wordpress" {
+		t.Fatalf("state.App = %q, want wordpress", state.App)
+	}
+	data, _ := os.ReadFile(filepath.Join(p.Layout.CaddyConfigDir, "example.com.caddy"))
+	if !strings.Contains(string(data), "respond @forbidden 403") {
+		t.Fatalf("vhost was not hardened:\n%s", data)
+	}
+}
+
+// A site already marked app="wordpress" does no vhost work on a repeat call.
+func TestAppInstallDoesNoVhostWorkWhenTheProfileIsAlreadyRecorded(t *testing.T) {
+	p, runner := newSite(t)
+	runner.isInstalled = true
+	state, _ := p.Store.Get("example.com")
+	state.App = "wordpress"
+	if err := p.Store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.AppInstall("example.com", AppInstallRequest{
+		App: "wordpress", AdminUser: "admin", AdminEmail: "a@example.com",
+		SiteTitle: "x", SiteURL: "https://example.com", DBName: "d", DBUser: "u",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if len(runner.calls) != 1 {
 		t.Fatalf("expected only the is-installed probe, got %#v", runner.calls)
@@ -187,7 +241,7 @@ func TestAppInstallHardensTheCaddyVhostAndRecordsTheProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"/xmlrpc.php", "/wp-config.php", "/wp-content/uploads/*.php", "respond @blocked 403", "Cache-Control"} {
+	for _, want := range []string{"/xmlrpc.php", "/wp-config.php", "respond @forbidden 403", "wp-content/uploads/", "Cache-Control"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("vhost was not hardened, missing %q:\n%s", want, data)
 		}
@@ -212,7 +266,10 @@ func TestAppInstallHardensTheCaddyVhostAndRecordsTheProfile(t *testing.T) {
 	}
 }
 
-func TestAppInstallRollsBackTheVhostWhenCaddyReloadFails(t *testing.T) {
+// A Caddy reload failure after `wp core install` succeeded must not lose the
+// generated password nor report the install as failed: the hardening is
+// deferred (drift + a retry converge it) and the previous vhost is restored.
+func TestAppInstallDefersHardeningButKeepsThePasswordWhenCaddyReloadFails(t *testing.T) {
 	p, runner := newSite(t)
 	runner.failCmd = "systemctl reload caddy"
 
@@ -221,11 +278,22 @@ func TestAppInstallRollsBackTheVhostWhenCaddyReloadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := p.AppInstall("example.com", AppInstallRequest{
+	result, err := p.AppInstall("example.com", AppInstallRequest{
 		App: "wordpress", AdminUser: "admin", AdminEmail: "a@example.com",
 		SiteTitle: "x", SiteURL: "https://example.com", DBName: "d", DBUser: "u",
-	}); err == nil {
-		t.Fatal("expected the caddy reload failure to surface")
+	})
+	if err != nil {
+		t.Fatalf("install must not fail on a deferred vhost swap: %v", err)
+	}
+	if !result.Installed || result.AdminPassword == "" {
+		t.Fatalf("password/installed lost on a deferred swap: %#v", result)
+	}
+	if !strings.Contains(result.Reason, "deferred") {
+		t.Fatalf("reason = %q, want a 'deferred' note", result.Reason)
+	}
+	// The profile is still recorded so Reconcile sees the drift.
+	if state, _ := p.Store.Get("example.com"); state.App != "wordpress" {
+		t.Fatalf("state.App = %q, want wordpress", state.App)
 	}
 
 	after, err := os.ReadFile(filepath.Join(p.Layout.CaddyConfigDir, "example.com.caddy"))
@@ -235,4 +303,36 @@ func TestAppInstallRollsBackTheVhostWhenCaddyReloadFails(t *testing.T) {
 	if string(after) != string(original) {
 		t.Fatalf("vhost was not rolled back after the reload failed:\n%s", after)
 	}
+}
+
+func TestAppInstallForcesWpCliSoARetryIsNotWedged(t *testing.T) {
+	p, runner := newSite(t)
+
+	if _, err := p.AppInstall("example.com", AppInstallRequest{
+		App: "wordpress", AdminUser: "admin", AdminEmail: "a@example.com",
+		SiteTitle: "x", SiteURL: "https://example.com", DBName: "d", DBUser: "u",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"core download", "config create"} {
+		var forced bool
+		for _, c := range wpCalls(runner.calls) {
+			if wpSubcommand(c[1:]) == want && contains(c, "--force") {
+				forced = true
+			}
+		}
+		if !forced {
+			t.Fatalf("%q did not run with --force: %#v", want, runner.calls)
+		}
+	}
+}
+
+func contains(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
