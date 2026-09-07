@@ -14,8 +14,19 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		php8.4-fpm php8.4-cli php8.4-mysql php8.4-xml php8.4-mbstring php8.4-curl php8.4-zip \
 		php8.5-fpm php8.5-cli php8.5-mysql php8.5-xml php8.5-mbstring php8.5-curl php8.5-zip \
-		openssh-server mariadb-server cron xz-utils \
+		openssh-server mariadb-server cron xz-utils sudo less \
 	&& rm -rf /var/lib/apt/lists/* /tmp/debsuryorg-archive-keyring.deb
+
+# wp-cli for site.app.install (WordPress hosting). The agent runs it as the
+# site's own Unix user; the phar is verified against its published sha512.
+RUN set -eux; \
+	curl -fsSL -o /usr/local/bin/wp \
+		https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli-2.11.0.phar; \
+	curl -fsSL -o /tmp/wp.sha512 \
+		https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli-2.11.0.phar.sha512; \
+	echo "$(cat /tmp/wp.sha512)  /usr/local/bin/wp" | sha512sum -c -; \
+	chmod 0755 /usr/local/bin/wp; \
+	rm -f /tmp/wp.sha512
 
 # Stalwart (mail) + its CLI, statically linked (musl) so they run regardless of
 # the base image's glibc. The agent administers this Stalwart over JMAP when

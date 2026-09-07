@@ -41,3 +41,10 @@ endpoint (`internal/status`) and `nubit-agent tui` (`internal/tui`). They do
 not add a privileged command type, do not change the Agent↔Control contract,
 and hold no secrets. The closed command set, the control-plane transport, and
 every operational claim about them stay under the rule above.
+
+**Carve-out (`site.app.install`, ADR-005).** One closed command that installs
+WordPress into an existing site's document root via wp-cli, as the site's own
+Unix user. Payload-validated, idempotent, tested against a fake `Runner`.
+Real-VM / disposable-container validation against wp-cli + MariaDB is the
+follow-up before it runs on a customer node; the WordPress Caddy template and
+auto-updates are separate.

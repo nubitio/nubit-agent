@@ -35,6 +35,7 @@ Agent-supported command families known in this codebase are:
 | --- | --- | --- |
 | system | `system.ping`, `system.reconcile` | Supported by Agent. |
 | site | `site.create`, `site.inspect`, `site.suspend`, `site.resume`, `site.delete`, `site.add-domain`, `site.remove-domain`, `site.usage` | Core site lifecycle is supported by Agent; Control lifecycle coverage is partial and must be validated per flow. |
+| app | `site.app.install` | Managed WordPress: runs wp-cli as the site's Unix user (download → config → install), idempotent, returns the admin password once. Unit-tested; real-VM/container validation is the follow-up before enablement on a customer node. See ADR-005. |
 | php | `runtime.set-version`, `runtime.inspect`, `runtime.remove` | Supported by Agent; runtime removal remains an explicit operator/lifecycle action. |
 | sftp | `sftp.create`, `sftp.update-key`, `sftp.revoke` | Supported by Agent; Control queues create/update in current portal flows. |
 | database | `database.create`, `database.rotate-password`, `database.delete` | Supported by Agent; Control queues create and password rotation in current flows. |
