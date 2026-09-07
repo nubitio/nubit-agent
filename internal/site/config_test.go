@@ -13,6 +13,46 @@ func TestLocalhostAliasIsOptional(t *testing.T) {
 	}
 }
 
+func TestWordPressVhostIsHardenedAndCachesStatics(t *testing.T) {
+	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "")
+	caddy := CaddyConfigWordPress("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")
+
+	// still a PHP-FastCGI site on the pool socket
+	if !strings.Contains(caddy, "php_fastcgi unix/site-example.sock") {
+		t.Fatalf("wordpress vhost lost its FastCGI upstream:\n%s", caddy)
+	}
+	// the sensitive paths a WordPress install exposes are answered with 403
+	for _, blocked := range []string{"/xmlrpc.php", "/wp-config.php", "/.git/*", "*.sql"} {
+		if !strings.Contains(caddy, blocked) {
+			t.Fatalf("wordpress vhost does not block %q:\n%s", blocked, caddy)
+		}
+	}
+	if !strings.Contains(caddy, "respond @forbidden 403") {
+		t.Fatalf("forbidden paths are not denied:\n%s", caddy)
+	}
+	// PHP under uploads is denied via a regex so the dated year/month
+	// subdirectories WordPress writes to are covered, not just the top level.
+	if !strings.Contains(caddy, `path_regexp uploadsphp ^/wp-content/uploads/.*\.(php`) || !strings.Contains(caddy, "respond @uploads_php 403") {
+		t.Fatalf("PHP under uploads is not denied recursively:\n%s", caddy)
+	}
+	// static assets get a cache header, but not an immutable one — a managed
+	// host has to be able to bust it after a plugin update.
+	if !strings.Contains(caddy, `header @static Cache-Control "public, max-age=604800"`) {
+		t.Fatalf("static assets are not cached as expected:\n%s", caddy)
+	}
+	if strings.Contains(caddy, "immutable") {
+		t.Fatalf("static cache header must not be immutable:\n%s", caddy)
+	}
+}
+
+func TestWordPressVhostKeepsTheLocalhostAlias(t *testing.T) {
+	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "1")
+	caddy := CaddyConfigWordPress("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")
+	if !strings.Contains(caddy, "http://example.com.localhost") {
+		t.Fatalf("expected localhost alias: %s", caddy)
+	}
+}
+
 func TestSiteConfigsUseIsolatedPaths(t *testing.T) {
 	t.Setenv("NUBIT_SITE_LOCALHOST_ALIAS", "")
 	caddy := CaddyConfig("example.com", "/srv/nubit/sites/example.com/public", "site-example.sock")

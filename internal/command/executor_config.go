@@ -64,6 +64,7 @@ func ConfigFromEnv() ExecutorConfig {
 			SiteBackupCreate:  30 * time.Minute,
 			SiteBackupRestore: 30 * time.Minute,
 			SiteBackupVerify:  30 * time.Minute,
+			SiteAppInstall:    10 * time.Minute,
 		},
 		TypeRates: map[string]float64{},
 		ExemptTypes: map[string]bool{

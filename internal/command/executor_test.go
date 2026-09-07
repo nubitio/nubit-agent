@@ -70,6 +70,10 @@ func (fakeSiteProvisioner) Reset() (site.ResetResult, error) {
 	return site.ResetResult{Deleted: []string{"example.com"}}, nil
 }
 
+func (fakeSiteProvisioner) AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error) {
+	return site.AppInstallResult{App: request.App, Installed: true, Version: request.Version, AdminUser: request.AdminUser, AdminPassword: "generated"}, nil
+}
+
 type fakeFilesProvisioner struct{}
 
 func (fakeFilesProvisioner) List(siteID, rel string) (files.ListResult, error) {
@@ -369,6 +373,11 @@ func (slow slowSiteProvisioner) Reconcile() ([]site.Drift, error) {
 	return nil, nil
 }
 
+func (slow slowSiteProvisioner) AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error) {
+	time.Sleep(slow.delay)
+	return site.AppInstallResult{App: request.App, Installed: true}, nil
+}
+
 // ensure context import is used (the fixture is internal to these tests
 // and uses a select on ctx in helpers; declared here to keep the import).
 var _ = context.Background
@@ -534,6 +543,11 @@ func (counter *counterProvisioner) RemoveRuntime(phpVersion string, confirmed bo
 func (counter *counterProvisioner) Reconcile() ([]site.Drift, error) {
 	counter.record()
 	return nil, nil
+}
+
+func (counter *counterProvisioner) AppInstall(siteID string, request site.AppInstallRequest) (site.AppInstallResult, error) {
+	counter.record()
+	return site.AppInstallResult{App: request.App, Installed: true}, nil
 }
 
 func (counter *counterProvisioner) record() {

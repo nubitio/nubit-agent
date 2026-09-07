@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func CaddyConfig(domain, root, socket string) string {
+// caddySiteHeader turns the ", "-joined domain list into the site address line
+// (adding the "<host>.localhost" aliases when NUBIT_SITE_LOCALHOST_ALIAS is on)
+// and the per-site access-log path. Shared by every vhost template.
+func caddySiteHeader(domain string) (address, logFile string) {
 	parts := strings.Split(domain, ", ")
 	hosts := parts
 	if v := os.Getenv("NUBIT_SITE_LOCALHOST_ALIAS"); v == "1" || v == "true" {
@@ -19,9 +22,45 @@ func CaddyConfig(domain, root, socket string) string {
 			hosts = append(hosts, part, "http://"+part+".localhost")
 		}
 	}
-	logFile := "/var/log/nubit/" + strings.ReplaceAll(parts[0], "/", "_") + ".caddy.log"
+	logFile = "/var/log/nubit/" + strings.ReplaceAll(parts[0], "/", "_") + ".caddy.log"
+	return strings.Join(hosts, ", "), logFile
+}
 
-	return fmt.Sprintf("%s {\n\troot * %s\n\tphp_fastcgi unix/%s\n\tfile_server\n\tlog {\n\t\toutput file %s\n\t}\n}\n", strings.Join(hosts, ", "), root, socket, logFile)
+func CaddyConfig(domain, root, socket string) string {
+	address, logFile := caddySiteHeader(domain)
+
+	return fmt.Sprintf("%s {\n\troot * %s\n\tphp_fastcgi unix/%s\n\tfile_server\n\tlog {\n\t\toutput file %s\n\t}\n}\n", address, root, socket, logFile)
+}
+
+// CaddyConfigWordPress is the vhost for a managed-WordPress site: the same
+// PHP-FastCGI serving as CaddyConfig plus WordPress-shaped hardening (block
+// xmlrpc.php and the config/VCS/dotfiles, deny PHP anywhere under uploads) and
+// a cache header on static assets. Caddy's php_fastcgi already does the
+// permalink try_files for index.php, so that is not repeated here.
+func CaddyConfigWordPress(domain, root, socket string) string {
+	address, logFile := caddySiteHeader(domain)
+
+	return fmt.Sprintf(`%s {
+	root * %s
+
+	@forbidden path /xmlrpc.php /wp-config.php /.git/* /.svn/* /.env *.sql *.bak *.log
+	respond @forbidden 403
+
+	# PHP dropped into the uploads tree (including the dated year/month
+	# subdirectories WordPress writes to) is never executed.
+	@uploads_php path_regexp uploadsphp ^/wp-content/uploads/.*\.(php|phtml|phar|php[0-9])$
+	respond @uploads_php 403
+
+	@static path *.css *.js *.mjs *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.woff *.woff2 *.ttf *.eot
+	header @static Cache-Control "public, max-age=604800"
+
+	php_fastcgi unix/%s
+	file_server
+	log {
+		output file %s
+	}
+}
+`, address, root, socket, logFile)
 }
 
 // WebServerUser is the account Caddy runs as under its Debian package.
