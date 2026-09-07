@@ -90,13 +90,16 @@ func (p SiteAppInstallPayload) toRequest() site.AppInstallRequest {
 }
 
 // SiteAppUpdatePayload is the site.app.update command payload. With no
-// component flag set, all three (core, plugins, themes) are updated.
+// component flag set, all three (core, plugins, themes) are updated. ServiceID
+// is Control's own routing field: accepted so the payload can stay strict
+// about component keys without rejecting it, but unused here.
 type SiteAppUpdatePayload struct {
-	SiteID  string `json:"siteId"`
-	Core    bool   `json:"core"`
-	Plugins bool   `json:"plugins"`
-	Themes  bool   `json:"themes"`
-	DryRun  bool   `json:"dryRun"`
+	SiteID    string `json:"siteId"`
+	Core      bool   `json:"core"`
+	Plugins   bool   `json:"plugins"`
+	Themes    bool   `json:"themes"`
+	DryRun    bool   `json:"dryRun"`
+	ServiceID int64  `json:"serviceId"`
 }
 
 func parseSiteAppUpdate(payload json.RawMessage) (SiteAppUpdatePayload, error) {
@@ -126,10 +129,12 @@ func (p SiteAppUpdatePayload) toRequest() site.AppUpdateRequest {
 
 // SiteAppAdminPasswordPayload is the site.app.admin-password command payload.
 // The agent always generates the new password and returns it once — the caller
-// does not get to choose it.
+// does not get to choose it. ServiceID is Control's routing field, accepted
+// but unused here.
 type SiteAppAdminPasswordPayload struct {
 	SiteID    string `json:"siteId"`
 	AdminUser string `json:"adminUser"`
+	ServiceID int64  `json:"serviceId"`
 }
 
 func parseSiteAppAdminPassword(payload json.RawMessage) (SiteAppAdminPasswordPayload, error) {
