@@ -13,8 +13,9 @@ import (
 type wpRunner struct {
 	calls       [][]string
 	isInstalled bool
-	failSub     string // wp subcommand to fail, e.g. "core download"
-	failCmd     string // any command line containing this substring fails, e.g. "systemctl reload caddy"
+	failSub     string            // wp subcommand to fail, e.g. "core download"
+	failCmd     string            // any command line containing this substring fails, e.g. "systemctl reload caddy"
+	outputs     map[string]string // wp subcommand -> stdout, for the OutputRunner path
 }
 
 func (r *wpRunner) Run(name string, args ...string) error {
@@ -34,6 +35,16 @@ func (r *wpRunner) Run(name string, args ...string) error {
 		return errors.New("injected failure")
 	}
 	return nil
+}
+
+// Output satisfies OutputRunner so AppUpdate can read `wp core version`. It
+// records the call like Run and answers from the outputs table.
+func (r *wpRunner) Output(name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if v, ok := r.outputs[wpSubcommand(args)]; ok {
+		return []byte(v + "\n"), nil
+	}
+	return nil, errors.New("no output configured")
 }
 
 // wpSubcommand pulls "core download" / "config create" out of the arg list,
@@ -335,4 +346,169 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// markWordPress flips the site's stored profile to "wordpress" so AppUpdate
+// will act on it.
+func markWordPress(t *testing.T, p Provisioner) {
+	t.Helper()
+	state, _ := p.Store.Get("example.com")
+	state.App = "wordpress"
+	if err := p.Store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppUpdateRunsCorePluginsThemesAsTheSiteUser(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	runner.outputs = map[string]string{"core version": "6.6.1"}
+
+	result, err := p.AppUpdate("example.com", AppUpdateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Components) != 3 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	want := map[string]bool{"core update": false, "plugin update": false, "theme update": false, "core update-db": false}
+	for _, c := range runner.calls {
+		if c[0] != "sudo" {
+			t.Fatalf("wp-cli not run via sudo: %#v", c)
+		}
+		if c[1] != "-u" || c[2] != "site-example" {
+			t.Fatalf("wp-cli not run as the site user: %#v", c)
+		}
+		if _, tracked := want[wpSubcommand(c[1:])]; tracked {
+			want[wpSubcommand(c[1:])] = true
+		}
+	}
+	for sub, seen := range want {
+		if !seen {
+			t.Fatalf("expected %q to run: %#v", sub, runner.calls)
+		}
+	}
+}
+
+func TestAppUpdateReportsTheCoreVersionDelta(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	// core version is asked twice; answer 6.6.1 then 6.6.2.
+	calls := 0
+	runner.outputs = map[string]string{}
+	// swap the Output impl for a sequence
+	seq := []string{"6.6.1", "6.6.2"}
+	p.Runner = &sequencedVersionRunner{wpRunner: runner, seq: seq, n: &calls}
+
+	result, err := p.AppUpdate("example.com", AppUpdateRequest{Core: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CoreBefore != "6.6.1" || result.CoreAfter != "6.6.2" {
+		t.Fatalf("version delta not reported: %#v", result)
+	}
+}
+
+// sequencedVersionRunner answers `core version` from a slice, once per call.
+type sequencedVersionRunner struct {
+	*wpRunner
+	seq []string
+	n   *int
+}
+
+func (r *sequencedVersionRunner) Output(name string, args ...string) ([]byte, error) {
+	if wpSubcommand(args) == "core version" && *r.n < len(r.seq) {
+		v := r.seq[*r.n]
+		*r.n++
+		return []byte(v + "\n"), nil
+	}
+	return r.wpRunner.Output(name, args...)
+}
+
+func TestAppUpdateContinuesAfterAComponentFailsAndReportsNotOK(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+	runner.failSub = "plugin update"
+
+	result, err := p.AppUpdate("example.com", AppUpdateRequest{})
+	if err != nil {
+		t.Fatalf("a component failure must not fail the command: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("result should be not-OK when a component failed: %#v", result)
+	}
+	var pluginItem, themeItem *AppComponentResult
+	for i := range result.Components {
+		switch result.Components[i].Component {
+		case "plugins":
+			pluginItem = &result.Components[i]
+		case "themes":
+			themeItem = &result.Components[i]
+		}
+	}
+	if pluginItem == nil || pluginItem.OK || pluginItem.Detail == "" {
+		t.Fatalf("plugin failure not recorded: %#v", result.Components)
+	}
+	if themeItem == nil || !themeItem.OK {
+		t.Fatalf("themes should still have been attempted after plugins failed: %#v", result.Components)
+	}
+}
+
+func TestAppUpdateDryRunPassesTheFlagAndSkipsUpdateDB(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+
+	if _, err := p.AppUpdate("example.com", AppUpdateRequest{DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range runner.calls {
+		if wpSubcommand(c[1:]) == "core update-db" {
+			t.Fatalf("update-db must not run on a dry run: %#v", runner.calls)
+		}
+	}
+	var dryCore bool
+	for _, c := range runner.calls {
+		if wpSubcommand(c[1:]) == "core update" && contains(c, "--dry-run") {
+			dryCore = true
+		}
+	}
+	if !dryCore {
+		t.Fatalf("core update did not get --dry-run: %#v", runner.calls)
+	}
+}
+
+func TestAppUpdateRefusesASiteWithoutAManagedApp(t *testing.T) {
+	p, runner := newSite(t) // App left unset
+	runner.isInstalled = true
+	if _, err := p.AppUpdate("example.com", AppUpdateRequest{}); err == nil {
+		t.Fatal("expected an error for a site with no managed WordPress install")
+	}
+}
+
+func TestAppUpdateRefusesWhenWordPressIsNotInstalled(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = false
+	if _, err := p.AppUpdate("example.com", AppUpdateRequest{}); err == nil {
+		t.Fatal("expected an error when wp core is-installed fails")
+	}
+}
+
+func TestAppUpdateOnlyUpdatesTheRequestedComponent(t *testing.T) {
+	p, runner := newSite(t)
+	markWordPress(t, p)
+	runner.isInstalled = true
+
+	if _, err := p.AppUpdate("example.com", AppUpdateRequest{Plugins: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range runner.calls {
+		if sub := wpSubcommand(c[1:]); sub == "core update" || sub == "theme update" {
+			t.Fatalf("only plugins were requested, but %q ran: %#v", sub, runner.calls)
+		}
+	}
 }

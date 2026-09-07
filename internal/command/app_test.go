@@ -62,6 +62,25 @@ func TestParseSiteAppInstallDefaultsTheURLFromTheSiteID(t *testing.T) {
 	}
 }
 
+func TestParseSiteAppUpdateAcceptsABareSiteId(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"siteId": "example.com", "plugins": true, "dryRun": true})
+	request, err := parseSiteAppUpdate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := request.toRequest()
+	if !got.Plugins || got.Core || !got.DryRun {
+		t.Fatalf("unexpected request: %#v", got)
+	}
+}
+
+func TestParseSiteAppUpdateRejectsABadSiteId(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"siteId": "not a domain"})
+	if _, err := parseSiteAppUpdate(raw); err == nil {
+		t.Fatal("expected a bad site id to be rejected")
+	}
+}
+
 func TestParseSiteAppInstallRejectsBadInput(t *testing.T) {
 	cases := map[string]func(m map[string]any){
 		"non-wordpress app": func(m map[string]any) { m["app"] = "joomla" },

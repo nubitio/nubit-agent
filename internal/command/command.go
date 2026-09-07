@@ -16,6 +16,7 @@ const SiteRemoveDomain = "site.remove-domain"
 const SiteDelete = "site.delete"
 const SiteSetResources = "site.set-resources"
 const SiteAppInstall = "site.app.install"
+const SiteAppUpdate = "site.app.update"
 
 // The runtime commands are deliberately not named after PHP. A site's runtime
 // is what they set and inspect, and PHP is only the provider that exists today;

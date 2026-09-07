@@ -168,9 +168,19 @@ transport migration are pending; neither is deployed or validated end to end:
 6. `site.remove-domain` (implemented)
 7. `runtime.set-version` (implemented)
 8. `site.inspect` (implemented)
+9. `site.app.install` (implemented, ADR-005) — installs WordPress via wp-cli and
+   applies the hardened WordPress Caddy vhost.
+10. `site.app.update` (implemented, ADR-005) — `wp core/plugin/theme update` as
+    the site user.
 
 Each command must define validation, idempotency identity, expected files,
 service reload behavior, and rollback behavior before implementation.
+
+**Pending validation (ADR-005):** `site.app.install` and `site.app.update` are
+unit-tested against a fake `Runner` only. A real-VM / disposable-container run
+against wp-cli + a real MariaDB — the discipline the web profile already
+applies to `site.create` — is required before either is enabled on a customer
+node.
 
 ## Access commands
 
