@@ -19,6 +19,10 @@ type Executor interface {
 	Execute(cmd command.Command) (command.Result, error)
 }
 
+type contextExecutor interface {
+	ExecuteContext(context.Context, command.Command) (command.Result, error)
+}
+
 // PollOption configures optional Poll behaviour.
 type PollOption func(*pollSettings)
 
@@ -142,7 +146,13 @@ func executeAndReport(ctx context.Context, client *Client, executor Executor, ou
 	defer span.End()
 	log.Printf("nubit-agent: executing %s id=%s", cmd.Type, cmd.ID)
 
-	result, execErr := executor.Execute(cmd)
+	var result command.Result
+	var execErr error
+	if cancellable, ok := executor.(contextExecutor); ok {
+		result, execErr = cancellable.ExecuteContext(ctx, cmd)
+	} else {
+		result, execErr = executor.Execute(cmd)
+	}
 	if command.SystemReset == cmd.Type && execErr == nil {
 		if clearer, ok := outbox.(interface{ Reset() error }); ok {
 			_ = clearer.Reset()
@@ -157,7 +167,7 @@ func executeAndReport(ctx context.Context, client *Client, executor Executor, ou
 	span.SetAttributes(attribute.String("nubit.command.status", status))
 	telemetry.RecordCommand(ctx, cmd.Type, status)
 
-	pending := PendingResult{CommandID: cmd.ID, Status: status, Output: result.Output}
+	pending := PendingResult{CommandID: cmd.ID, LeaseToken: cmd.LeaseToken, Status: status, Output: result.Output}
 	if execErr != nil {
 		pending.Error = execErr.Error()
 	}

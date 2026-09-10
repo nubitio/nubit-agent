@@ -247,8 +247,19 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 }
 
 func (executor *Executor) Execute(command Command) (Result, error) {
+	return executor.ExecuteContext(context.Background(), command)
+}
+
+// ExecuteContext allows the poller to cancel an in-flight command when its
+// lease/request context ends. Provisioners that support context cancellation
+// are stopped; non-context legacy provisioners still complete atomically and
+// their result is discarded by the caller.
+func (executor *Executor) ExecuteContext(parent context.Context, command Command) (Result, error) {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
+	if err := parent.Err(); err != nil {
+		return Result{}, fmt.Errorf("command cancelled before execution: %w", err)
+	}
 
 	if err := command.Validate(); err != nil {
 		return Result{}, err
@@ -275,7 +286,7 @@ func (executor *Executor) Execute(command Command) (Result, error) {
 	payloadSHA := audit.HashPayload(command.Payload)
 	started := time.Now()
 
-	result, err := executor.runWithTimeout(command)
+	result, err := executor.runWithTimeout(parent, command)
 	if err != nil {
 		executor.recordAudit(command, payloadSHA, started, "failed")
 		return Result{}, err
@@ -311,21 +322,16 @@ func (executor *Executor) recordAudit(command Command, payloadSHA string, starte
 	}
 }
 
-// runWithTimeout dispatches the command under a per-type timeout. The
-// provisioners themselves do not currently accept a context, so the timeout
-// only protects the executor's mutex and the dispatcher's bookkeeping: any
-// child process the provisioner spawns will keep running until the
-// provisioner returns, and rely on systemd's KillMode=mixed to clean up if
-// it does not. This is the documented limitation: a tighter guarantee would
-// require every provisioner to honour ctx, which is out of scope for a
-// defensive fix.
-func (executor *Executor) runWithTimeout(command Command) (Result, error) {
+// runWithTimeout dispatches the command under a per-type timeout. A timeout is
+// reported and cached as terminal so a redelivery cannot start a second copy
+// while a legacy provisioner is still unwinding.
+func (executor *Executor) runWithTimeout(parent context.Context, command Command) (Result, error) {
 	timeout := executor.timeoutFor(command.Type)
 	if timeout <= 0 {
 		return executor.runCommand(command)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	type outcome struct {
@@ -361,6 +367,8 @@ func (executor *Executor) runWithTimeout(command Command) (Result, error) {
 			Status:    "failed",
 			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
 		}
+		// Persist the terminal timeout so a redelivery cannot start a second
+		// copy while the original legacy provisioner is still unwinding.
 		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
 			return Result{}, saveErr
 		}

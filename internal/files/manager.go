@@ -19,6 +19,8 @@ import (
 )
 
 const maxReadBytes = 50 << 20
+const maxArchiveEntries = 10_000
+const maxArchiveBytes = 500 << 20
 
 type Manager struct {
 	Sites site.StateStore
@@ -199,10 +201,18 @@ func (manager Manager) Unzip(siteID, rel string) error {
 		return err
 	}
 	defer reader.Close()
+	if len(reader.File) > maxArchiveEntries {
+		return errors.New("zip contains too many entries")
+	}
+	var extracted int64
 	for _, file := range reader.File {
 		name := filepath.ToSlash(file.Name)
-		if strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
+		clean := path.Clean(name)
+		if strings.HasPrefix(name, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
 			return errors.New("zip contains an unsafe path")
+		}
+		if file.Mode()&os.ModeSymlink != 0 {
+			return errors.New("zip contains a symlink")
 		}
 		target := filepath.Join(destDir, filepath.FromSlash(name))
 		if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
@@ -215,12 +225,19 @@ func (manager Manager) Unzip(siteID, rel string) error {
 			_ = chownTo(state.SystemUser, target)
 			continue
 		}
+		if file.UncompressedSize64 > maxArchiveBytes || extracted > maxArchiveBytes-int64(file.UncompressedSize64) {
+			return errors.New("zip exceeds extraction size limit")
+		}
+		if err := ensureNoSymlinkParents(root, target); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
 		if err := extractZipFile(file, target); err != nil {
 			return err
 		}
+		extracted += int64(file.UncompressedSize64)
 		_ = chownTo(state.SystemUser, target)
 	}
 	return nil
@@ -300,6 +317,9 @@ func (manager Manager) resolve(siteID, rel string, mustExist bool) (site.State, 
 	if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
 		return site.State{}, "", errors.New("path is outside the site")
 	}
+	if err := ensureNoSymlinkParents(root, target); err != nil {
+		return state, "", err
+	}
 	if mustExist {
 		if _, err := os.Lstat(target); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -325,6 +345,31 @@ func normalizeRel(rel string) (string, error) {
 		return "", errors.New("path is outside the site")
 	}
 	return clean, nil
+}
+
+func ensureNoSymlinkParents(root, target string) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("path is outside the site")
+	}
+	current := root
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("path would follow a symlink")
+		}
+	}
+	return nil
 }
 
 func chownTo(username, target string) error {

@@ -83,6 +83,7 @@ type Command struct {
 	Type           string          `json:"type"`
 	Version        int             `json:"version"`
 	IdempotencyKey string          `json:"idempotencyKey"`
+	LeaseToken     string          `json:"leaseToken"`
 	Payload        json.RawMessage `json:"payload"`
 }
 
