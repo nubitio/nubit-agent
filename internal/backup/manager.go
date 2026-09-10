@@ -64,8 +64,10 @@ const (
 	// keepArchives is the floor: prune never drops a site below this many
 	// archives, even when a short retention window would. It is also the exact
 	// behaviour when the plan supplies no retentionDays.
-	keepArchives  = 7
-	archiveLayout = "20060102T150405Z"
+	keepArchives      = 7
+	archiveLayout     = "20060102T150405Z"
+	maxArchiveEntries = 10000
+	maxArchiveBytes   = 500 << 20
 )
 
 // Manager creates, lists and restores per-site backups. Every archive is a
@@ -398,6 +400,8 @@ func (manager Manager) inspectArchive(archive io.Reader, scratch, siteID string)
 
 	tr := tar.NewReader(gz)
 	var files, databases int
+	var entries int
+	var bytes int64
 	manifestSeen := false
 	for {
 		header, err := tr.Next()
@@ -407,6 +411,14 @@ func (manager Manager) inspectArchive(archive io.Reader, scratch, siteID string)
 		if err != nil {
 			return VerifyResult{Files: files, Databases: databases, Reason: "archive is truncated or corrupt: " + err.Error()}
 		}
+		entries++
+		if entries > maxArchiveEntries {
+			return VerifyResult{Reason: "archive contains too many entries"}
+		}
+		if header.Size < 0 || header.Size > maxArchiveBytes || bytes > maxArchiveBytes-header.Size {
+			return VerifyResult{Files: files, Databases: databases, Reason: "archive exceeds extraction size limit"}
+		}
+		bytes += header.Size
 		switch {
 		case header.Name == manifestName:
 			manifestSeen = true
@@ -414,6 +426,9 @@ func (manager Manager) inspectArchive(archive io.Reader, scratch, siteID string)
 				return VerifyResult{Reason: err.Error()}
 			}
 		case strings.HasPrefix(header.Name, filesPrefix):
+			if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+				return VerifyResult{Files: files, Databases: databases, Reason: "archive contains a link"}
+			}
 			if header.Typeflag != tar.TypeReg {
 				continue
 			}
@@ -459,6 +474,8 @@ func (manager Manager) applyArchive(archive io.Reader, state site.State) error {
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
+	entries := 0
+	var bytes int64
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -466,6 +483,14 @@ func (manager Manager) applyArchive(archive io.Reader, state site.State) error {
 		}
 		if err != nil {
 			return err
+		}
+		entries++
+		if entries > maxArchiveEntries || header.Size < 0 || header.Size > maxArchiveBytes || bytes > maxArchiveBytes-header.Size {
+			return errors.New("archive exceeds extraction limits")
+		}
+		bytes += header.Size
+		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+			return errors.New("archive contains a link")
 		}
 
 		switch {

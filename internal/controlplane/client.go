@@ -38,6 +38,8 @@ type Client struct {
 	KeyFile  string
 }
 
+var ErrLeaseRejected = errors.New("job lease rejected")
+
 func NewClient(baseURL, token string) *Client {
 	return &Client{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
@@ -194,6 +196,9 @@ func (client *Client) ReportPending(ctx context.Context, pending PendingResult) 
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client.authenticate(request)
+	if pending.LeaseToken != "" {
+		request.Header.Set("X-Agent-Lease-Token", pending.LeaseToken)
+	}
 
 	response, err := client.do(request)
 	if err != nil {
@@ -202,6 +207,9 @@ func (client *Client) ReportPending(ctx context.Context, pending PendingResult) 
 	defer func() { _ = response.Body.Close() }()
 
 	if http.StatusOK != response.StatusCode {
+		if response.StatusCode == http.StatusConflict {
+			return fmt.Errorf("%w: report result: unexpected status %d", ErrLeaseRejected, response.StatusCode)
+		}
 		return fmt.Errorf("report result: unexpected status %d", response.StatusCode)
 	}
 

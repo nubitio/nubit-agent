@@ -21,6 +21,12 @@ func Flush(ctx context.Context, client *Client, outbox Outbox) (int, error) {
 	drained := 0
 	for _, pending := range outbox.List() {
 		if err := client.ReportPending(ctx, pending); err != nil {
+			if errors.Is(err, ErrLeaseRejected) {
+				// The control plane has fenced this execution. Retrying the same
+				// result can never succeed and must not block newer work.
+				_ = outbox.Delete(pending.CommandID)
+				continue
+			}
 			return drained, fmt.Errorf("report result for command %s: %w", pending.CommandID, err)
 		}
 		if err := outbox.Delete(pending.CommandID); err != nil {
@@ -44,10 +50,11 @@ var (
 )
 
 type PendingResult struct {
-	CommandID string          `json:"commandId"`
-	Status    string          `json:"status"`
-	Output    json.RawMessage `json:"output,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	CommandID  string          `json:"commandId"`
+	LeaseToken string          `json:"leaseToken,omitempty"`
+	Status     string          `json:"status"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
 }
 
 type Outbox interface {
