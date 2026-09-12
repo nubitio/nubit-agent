@@ -9,6 +9,14 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
+)
+
+const (
+	DefaultOutboxLimit = 10000
+	DefaultOutboxBytes = 64 << 20
 )
 
 // Flush reports every pending result to Nubit Control and removes the ones
@@ -55,6 +63,7 @@ type PendingResult struct {
 	Status     string          `json:"status"`
 	Output     json.RawMessage `json:"output,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt,omitempty"`
 }
 
 type Outbox interface {
@@ -64,13 +73,15 @@ type Outbox interface {
 }
 
 type FileOutbox struct {
-	mu      sync.RWMutex
-	path    string
-	pending map[string]PendingResult
+	mu         sync.RWMutex
+	path       string
+	pending    map[string]PendingResult
+	maxEntries int
+	maxBytes   int64
 }
 
 func NewFileOutbox(path string) (*FileOutbox, error) {
-	outbox := &FileOutbox{path: path, pending: make(map[string]PendingResult)}
+	outbox := &FileOutbox{path: path, pending: make(map[string]PendingResult), maxEntries: DefaultOutboxLimit, maxBytes: DefaultOutboxBytes}
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return outbox, nil
@@ -84,20 +95,42 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 	return outbox, nil
 }
 
+func NewFileOutboxWithLimits(path string, maxEntries int, maxBytes int64) (*FileOutbox, error) {
+	outbox, err := NewFileOutbox(path)
+	if err != nil {
+		return nil, err
+	}
+	if maxEntries > 0 {
+		outbox.maxEntries = maxEntries
+	}
+	if maxBytes > 0 {
+		outbox.maxBytes = maxBytes
+	}
+	return outbox, nil
+}
+
 func (outbox *FileOutbox) Put(result PendingResult) error {
 	outbox.mu.Lock()
 	defer outbox.mu.Unlock()
-	previous, existed := outbox.pending[result.CommandID]
+	previous := clonePending(outbox.pending)
+	if result.CreatedAt.IsZero() {
+		result.CreatedAt = time.Now().UTC()
+	}
 	outbox.pending[result.CommandID] = result
+	outbox.prune()
 	if err := outbox.persist(); err != nil {
-		if existed {
-			outbox.pending[result.CommandID] = previous
-		} else {
-			delete(outbox.pending, result.CommandID)
-		}
+		outbox.pending = previous
 		return err
 	}
 	return nil
+}
+
+func clonePending(pending map[string]PendingResult) map[string]PendingResult {
+	clone := make(map[string]PendingResult, len(pending))
+	for key, result := range pending {
+		clone[key] = result
+	}
+	return clone
 }
 
 func (outbox *FileOutbox) List() []PendingResult {
@@ -146,23 +179,31 @@ func (outbox *FileOutbox) persist() error {
 	if err != nil {
 		return fmt.Errorf("%w: encode outbox: %v", ErrOutboxCorrupt, err)
 	}
-	temporary := outbox.path + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+	if err := durable.AtomicWrite(outbox.path, contents, 0o600); err != nil {
 		return fmt.Errorf("%w: write outbox: %v", ErrOutboxIO, err)
 	}
-	if err := os.Rename(temporary, outbox.path); err != nil {
-		return fmt.Errorf("%w: rename outbox: %v", ErrOutboxIO, err)
-	}
-	directory, err := os.Open(filepath.Dir(outbox.path))
-	if err != nil {
-		return fmt.Errorf("%w: open outbox directory: %v", ErrOutboxIO, err)
-	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		return fmt.Errorf("%w: sync outbox directory: %v", ErrOutboxIO, err)
-	}
-	if err := directory.Close(); err != nil {
-		return fmt.Errorf("%w: close outbox directory: %v", ErrOutboxIO, err)
-	}
 	return nil
+}
+
+func (outbox *FileOutbox) prune() {
+	for len(outbox.pending) > outbox.maxEntries {
+		delete(outbox.pending, oldest(outbox.pending))
+	}
+	for {
+		contents, err := json.Marshal(outbox.pending)
+		if err != nil || int64(len(contents)) <= outbox.maxBytes || len(outbox.pending) == 0 {
+			return
+		}
+		delete(outbox.pending, oldest(outbox.pending))
+	}
+}
+
+func oldest(pending map[string]PendingResult) string {
+	var key string
+	for candidate, result := range pending {
+		if key == "" || result.CreatedAt.Before(pending[key].CreatedAt) || (result.CreatedAt.Equal(pending[key].CreatedAt) && candidate < key) {
+			key = candidate
+		}
+	}
+	return key
 }

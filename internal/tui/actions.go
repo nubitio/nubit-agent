@@ -10,6 +10,7 @@ import (
 
 	"github.com/nubitio/nubit-agent/internal/command"
 	"github.com/nubitio/nubit-agent/internal/controlplane"
+	"github.com/nubitio/nubit-agent/internal/durable"
 	"github.com/nubitio/nubit-agent/internal/site"
 )
 
@@ -56,6 +57,11 @@ func runNodeReset(stateDir string, daemonRunning bool) (site.ResetResult, error)
 	if daemonRunning {
 		return site.ResetResult{}, errDaemonRunning
 	}
+	lock, err := durable.Acquire(filepath.Join(stateDir, "writer.lock"))
+	if err != nil {
+		return site.ResetResult{}, err
+	}
+	defer lock.Close()
 	p, err := newProvisioner(stateDir)
 	if err != nil {
 		return site.ResetResult{}, err
@@ -80,6 +86,11 @@ func flushOutboxNow(ctx context.Context, stateDir, controlURL string, daemonRunn
 	if daemonRunning {
 		return 0, errDaemonRunning
 	}
+	lock, err := durable.Acquire(filepath.Join(stateDir, "writer.lock"))
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
 	token := os.Getenv("NUBIT_AGENT_TOKEN")
 	if controlURL == "" || token == "" {
 		return 0, errors.New("outbox flush needs NUBIT_CONTROL_URL and NUBIT_AGENT_TOKEN in the environment")

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
 )
 
 type State struct {
@@ -168,9 +170,5 @@ func (store *FileStateStore) persist() error {
 	if err != nil {
 		return err
 	}
-	temporary := store.path + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, store.path)
+	return durable.AtomicWrite(store.path, contents, 0o600)
 }

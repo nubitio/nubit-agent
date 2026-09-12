@@ -23,6 +23,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/controlplane"
 	"github.com/nubitio/nubit-agent/internal/cron"
 	"github.com/nubitio/nubit-agent/internal/database"
+	"github.com/nubitio/nubit-agent/internal/durable"
 	"github.com/nubitio/nubit-agent/internal/enrollment"
 	"github.com/nubitio/nubit-agent/internal/files"
 	"github.com/nubitio/nubit-agent/internal/inventory"
@@ -88,6 +89,11 @@ func main() {
 	if stateDir == "" {
 		stateDir = defaultStateDir
 	}
+	writerLock, err := durable.Acquire(filepath.Join(stateDir, "writer.lock"))
+	if err != nil {
+		log.Fatalf("acquire agent writer lock: %v", err)
+	}
+	defer writerLock.Close()
 	// Cert validation at startup: a stale or untrusted cert means the agent
 	// will be silently downgraded to token-only mode (or worse, fail to
 	// connect). Operators expect loud failure so they fix the deployment.
