@@ -46,9 +46,14 @@ func (store *FileStore) Save(key string, result Result) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
+	previous, existed := store.results[key]
 	store.results[key] = result
 	if err := store.persist(); err != nil {
-		delete(store.results, key)
+		if existed {
+			store.results[key] = previous
+		} else {
+			delete(store.results, key)
+		}
 		return err
 	}
 

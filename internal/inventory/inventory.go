@@ -12,12 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"github.com/nubitio/nubit-agent/internal/site"
 )
 
 type RuntimeProvider interface {
 	RuntimeInventory() ([]site.RuntimeInfo, error)
 }
+type CapacityProvider interface{ CapacitySnapshot() capacity.Snapshot }
 
 type Snapshot struct {
 	CollectedAt  time.Time          `json:"collectedAt"`
@@ -30,9 +32,10 @@ type Snapshot struct {
 	Packages     map[string]string  `json:"packages"`
 	Capabilities []string           `json:"capabilities"`
 	PHPRuntimes  []site.RuntimeInfo `json:"phpRuntimes"`
+	Capacity     *capacity.Snapshot `json:"capacity,omitempty"`
 }
 
-func Collect(provider RuntimeProvider) (Snapshot, error) {
+func Collect(provider RuntimeProvider, capacityProviders ...CapacityProvider) (Snapshot, error) {
 	phpRuntimes, err := provider.RuntimeInventory()
 	if err != nil {
 		return Snapshot{}, err
@@ -41,13 +44,18 @@ func Collect(provider RuntimeProvider) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{
+	snapshot := Snapshot{
 		CollectedAt: time.Now().UTC(), OS: readOSRelease(), Architecture: runtime.GOARCH,
 		MemoryBytes: memoryBytes(), DiskBytes: diskTotal, DiskFree: diskFree,
 		IPAddresses: ipAddresses(), Packages: packageVersions(),
-		Capabilities: []string{"system.reconcile", "system.reset", "site.create", "site.inspect", "site.suspend", "site.resume", "site.delete", "site.add-domain", "site.remove-domain", "site.set-resources", "runtime.set-version", "runtime.inspect", "runtime.remove", "sftp.create", "sftp.update-key", "sftp.revoke", "sftp.user.create", "sftp.user.update-key", "sftp.user.delete", "database.create", "database.rotate-password", "database.delete", "database.user.create", "database.user.delete", "database.grant", "database.revoke", "site.files.list", "site.files.mkdir", "site.files.write", "site.files.read", "site.files.delete", "site.files.unzip", "site.files.rename", "site.usage", "site.logs.read", "site.cron.list", "site.cron.replace", "site.backup.list", "site.backup.create", "site.backup.restore"},
+		Capabilities: []string{"system.reconcile", "system.reset", "site.create", "site.inspect", "site.suspend", "site.resume", "site.delete", "site.add-domain", "site.remove-domain", "site.set-resources", "site.app.install", "site.app.update", "site.app.admin-password", "runtime.set-version", "runtime.inspect", "runtime.remove", "sftp.create", "sftp.update-key", "sftp.revoke", "sftp.user.create", "sftp.user.update-key", "sftp.user.delete", "database.create", "database.rotate-password", "database.delete", "database.user.create", "database.user.delete", "database.grant", "database.revoke", "site.files.list", "site.files.mkdir", "site.files.write", "site.files.read", "site.files.delete", "site.files.unzip", "site.files.rename", "site.usage", "site.logs.read", "site.cron.list", "site.cron.replace", "site.backup.list", "site.backup.create", "site.backup.restore", "site.backup.verify"},
 		PHPRuntimes:  phpRuntimes,
-	}, nil
+	}
+	if len(capacityProviders) > 0 {
+		value := capacityProviders[0].CapacitySnapshot()
+		snapshot.Capacity = &value
+	}
+	return snapshot, nil
 }
 
 func readOSRelease() map[string]string {

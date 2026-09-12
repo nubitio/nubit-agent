@@ -8,6 +8,7 @@
 package status
 
 import (
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"sync"
 	"time"
 )
@@ -22,27 +23,28 @@ const (
 // Snapshot is the JSON body of GET /status. Field names are stable so the
 // TUI and ad-hoc `curl | jq` both keep working.
 type Snapshot struct {
-	Version           string     `json:"version"`
-	StartedAt         time.Time  `json:"startedAt"`
-	UptimeSeconds     int64      `json:"uptimeSeconds"`
-	ListenAddr        string     `json:"listenAddr"`
-	StateDir          string     `json:"stateDir"`
-	ControlURL        string     `json:"controlUrl"`
-	Transport         string     `json:"transport"`
-	Enrolled          bool       `json:"enrolled"`
-	CertNotAfter      *time.Time `json:"certNotAfter,omitempty"`
-	PollInterval      string     `json:"pollInterval,omitempty"`
-	Polling           bool       `json:"polling"`
-	LastPollAt        *time.Time `json:"lastPollAt,omitempty"`
-	LastPollOK        bool       `json:"lastPollOk"`
-	LastPollError     string     `json:"lastPollError,omitempty"`
-	PollsOK           int        `json:"pollsOk"`
-	PollsFailed       int        `json:"pollsFailed"`
-	JobsFetched       int        `json:"jobsFetched"`
-	JobsExecuted      int        `json:"jobsExecuted"`
-	OutboxDepth       int        `json:"outboxDepth"`
-	SiteCount         int        `json:"siteCount"`
-	SelfUpdatePending bool       `json:"selfUpdatePending"`
+	Version           string             `json:"version"`
+	StartedAt         time.Time          `json:"startedAt"`
+	UptimeSeconds     int64              `json:"uptimeSeconds"`
+	ListenAddr        string             `json:"listenAddr"`
+	StateDir          string             `json:"stateDir"`
+	ControlURL        string             `json:"controlUrl"`
+	Transport         string             `json:"transport"`
+	Enrolled          bool               `json:"enrolled"`
+	CertNotAfter      *time.Time         `json:"certNotAfter,omitempty"`
+	PollInterval      string             `json:"pollInterval,omitempty"`
+	Polling           bool               `json:"polling"`
+	LastPollAt        *time.Time         `json:"lastPollAt,omitempty"`
+	LastPollOK        bool               `json:"lastPollOk"`
+	LastPollError     string             `json:"lastPollError,omitempty"`
+	PollsOK           int                `json:"pollsOk"`
+	PollsFailed       int                `json:"pollsFailed"`
+	JobsFetched       int                `json:"jobsFetched"`
+	JobsExecuted      int                `json:"jobsExecuted"`
+	OutboxDepth       int                `json:"outboxDepth"`
+	SiteCount         int                `json:"siteCount"`
+	SelfUpdatePending bool               `json:"selfUpdatePending"`
+	Capacity          *capacity.Snapshot `json:"capacity,omitempty"`
 }
 
 // Reporter accumulates the mutable parts of a Snapshot. It is safe for
@@ -54,6 +56,7 @@ type Reporter struct {
 
 	outboxDepth func() int
 	siteCount   func() int
+	capacity    func() capacity.Snapshot
 }
 
 // New seeds a Reporter with the fields fixed at startup (version, listen
@@ -83,6 +86,12 @@ func (r *Reporter) SetDynamic(outboxDepth, siteCount func() int) {
 	defer r.mu.Unlock()
 	r.outboxDepth = outboxDepth
 	r.siteCount = siteCount
+}
+
+func (r *Reporter) SetCapacity(snapshot func() capacity.Snapshot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.capacity = snapshot
 }
 
 // MarkPolling records that the poll loop has started (or that it never will,
@@ -154,6 +163,10 @@ func (r *Reporter) Snapshot() Snapshot {
 	}
 	if r.siteCount != nil {
 		out.SiteCount = r.siteCount()
+	}
+	if r.capacity != nil {
+		value := r.capacity()
+		out.Capacity = &value
 	}
 	return out
 }

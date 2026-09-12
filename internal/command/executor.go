@@ -13,6 +13,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/access"
 	"github.com/nubitio/nubit-agent/internal/audit"
 	"github.com/nubitio/nubit-agent/internal/backup"
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"github.com/nubitio/nubit-agent/internal/cron"
 	"github.com/nubitio/nubit-agent/internal/database"
 	"github.com/nubitio/nubit-agent/internal/files"
@@ -26,6 +27,7 @@ type Result struct {
 	CommandID string          `json:"commandId"`
 	Status    string          `json:"status"`
 	Output    json.RawMessage `json:"output"`
+	TimedOut  bool            `json:"timedOut,omitempty"`
 }
 
 type Store interface {
@@ -80,6 +82,9 @@ type Executor struct {
 	exemptTypes    map[string]bool
 	rateLimitersMu sync.Mutex
 	rateLimiters   map[string]*tokenBucket
+	capacity       *capacity.Manager
+	timedOutMu     sync.Mutex
+	timedOut       map[string]Result
 
 	// tlsIssueWait is how long tls.letsencrypt.enable waits for Caddy to
 	// finish obtaining a certificate before reporting that none exists. Zero
@@ -94,6 +99,29 @@ type Executor struct {
 // of the pointer; the caller may keep using the same Logger afterwards.
 func (executor *Executor) SetAuditLogger(logger *audit.Logger) {
 	executor.audit = logger
+}
+
+// RestoreCapacity reconstructs reservations after a daemon restart from the
+// durable site inventory. It is intentionally explicit; no speculative
+// command concurrency or implicit state migration is performed.
+func (executor *Executor) RestoreCapacity(reservations []capacity.Reservation) error {
+	if executor.capacity == nil {
+		return nil
+	}
+	for _, reservation := range reservations {
+		executor.capacity.RestoreSite(reservation)
+		if executor.capacity.Snapshot().Degraded {
+			log.Printf("nubit-agent: capacity admission degraded while restoring reservation %q", reservation.Name)
+		}
+	}
+	return nil
+}
+
+func (executor *Executor) CapacitySnapshot() capacity.Snapshot {
+	if executor.capacity == nil {
+		return capacity.Snapshot{}
+	}
+	return executor.capacity.Snapshot()
 }
 
 type SiteProvisioner interface {
@@ -205,8 +233,16 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		typeRates:      config.TypeRates,
 		exemptTypes:    exempt,
 		rateLimiters:   map[string]*tokenBucket{},
+		timedOut:       map[string]Result{},
 		tlsIssueWait:   config.TLSIssueWait,
 		tlsIssuePoll:   config.TLSIssuePollInterval,
+	}
+	if config.Capacity != nil {
+		if manager, err := capacity.New(*config.Capacity, nil); err == nil {
+			executor.capacity = manager
+		} else {
+			log.Printf("nubit-agent: capacity admission disabled: %v", err)
+		}
 	}
 	if executor.typeTimeouts == nil {
 		executor.typeTimeouts = map[string]time.Duration{}
@@ -277,6 +313,15 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	}
 
 	cacheResult := !resultIsNotCached(command.Type)
+	executor.timedOutMu.Lock()
+	terminalTimeout, timedOut := executor.timedOut[command.IdempotencyKey]
+	executor.timedOutMu.Unlock()
+	if timedOut {
+		return terminalTimeout, errors.New("command has a terminal timeout and is not safe to redeliver")
+	}
+	if persisted, found := executor.store.Get(command.IdempotencyKey); found && persisted.TimedOut {
+		return persisted, errors.New("command has a terminal timeout and is not safe to redeliver")
+	}
 	if cacheResult {
 		if result, found := executor.store.Get(command.IdempotencyKey); found {
 			return result, nil
@@ -285,14 +330,30 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 
 	payloadSHA := audit.HashPayload(command.Payload)
 	started := time.Now()
+	finishAdmission, err := executor.admit(parent, command)
+	if err != nil {
+		return Result{}, err
+	}
+	settled := false
+	executionSucceeded := false
+	defer func() {
+		if settled {
+			finishAdmission(executionSucceeded)
+		}
+	}()
 
-	result, err := executor.runWithTimeout(parent, command)
+	var result Result
+	result, err, settled = executor.runWithTimeout(parent, command, func(provisionerErr error) {
+		finishAdmission(provisionerErr == nil)
+	})
+	executionSucceeded = err == nil
 	if err != nil {
 		executor.recordAudit(command, payloadSHA, started, "failed")
 		return Result{}, err
 	}
 	if cacheResult {
 		if saveErr := executor.store.Save(command.IdempotencyKey, result); saveErr != nil {
+			err = saveErr
 			executor.recordAudit(command, payloadSHA, started, "failed")
 			return Result{}, saveErr
 		}
@@ -325,10 +386,11 @@ func (executor *Executor) recordAudit(command Command, payloadSHA string, starte
 // runWithTimeout dispatches the command under a per-type timeout. A timeout is
 // reported and cached as terminal so a redelivery cannot start a second copy
 // while a legacy provisioner is still unwinding.
-func (executor *Executor) runWithTimeout(parent context.Context, command Command) (Result, error) {
+func (executor *Executor) runWithTimeout(parent context.Context, command Command, completed func(error)) (Result, error, bool) {
 	timeout := executor.timeoutFor(command.Type)
 	if timeout <= 0 {
-		return executor.runCommand(command)
+		result, err := executor.runCommand(command)
+		return result, err, true
 	}
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
@@ -353,6 +415,17 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 
 	select {
 	case <-ctx.Done():
+		// Process shutdown is not a command timeout. Do not leave a terminal
+		// tombstone behind: the command must be retried after restart.
+		if parent.Err() != nil {
+			if completed != nil {
+				go func() { outcome := <-done; completed(outcome.err) }()
+			}
+			return Result{}, fmt.Errorf("command cancelled: %w", parent.Err()), false
+		}
+		if completed != nil {
+			go func() { outcome := <-done; completed(outcome.err) }()
+		}
 		// The provisioner is still running in its own goroutine and may
 		// eventually return; we deliberately do not wait for it. The
 		// command is recorded as failed and the control plane will see
@@ -366,15 +439,19 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 			CommandID: command.ID,
 			Status:    "failed",
 			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
+			TimedOut:  true,
 		}
+		executor.timedOutMu.Lock()
+		executor.timedOut[command.IdempotencyKey] = failed
+		executor.timedOutMu.Unlock()
 		// Persist the terminal timeout so a redelivery cannot start a second
 		// copy while the original legacy provisioner is still unwinding.
 		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
-			return Result{}, saveErr
+			return Result{}, saveErr, false
 		}
-		return Result{}, errors.New(message)
+		return Result{}, errors.New(message), false
 	case outcome := <-done:
-		return outcome.result, outcome.err
+		return outcome.result, outcome.err, true
 	}
 }
 
@@ -884,15 +961,11 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 }
 
 // resultIsNotCached lists command types whose result must not be replayed from
-// the idempotency store: read-through file/log/usage/backup queries that must
-// re-run, and site.app.admin-password, whose cached output is a WordPress
-// credential that would go stale the moment the admin changes it in wp-admin.
+// the idempotency store: read-only queries that should observe current state.
 func resultIsNotCached(commandType string) bool {
 	switch commandType {
-	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete,
-		SiteFilesUnzip, SiteFilesRename, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteCronReplace, SiteBackupList, SiteBackupCreate, SiteBackupRestore,
-		SiteBackupVerify, SiteAppAdminPassword:
+	case SiteFilesList, SiteFilesRead, SiteUsage, SiteLogsRead,
+		SiteCronList, SiteBackupList, SiteAppAdminPassword:
 		return true
 	default:
 		return false

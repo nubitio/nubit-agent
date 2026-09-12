@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -294,6 +295,44 @@ func TestManagerNoEnrollWhenCertExists(t *testing.T) {
 	}
 	if string(originalCert) != string(currentCert) {
 		t.Fatal("second enroll mutated the on-disk certificate")
+	}
+}
+
+func TestConcurrentEnrollUsesOneWriterAndLeavesRestartableMaterial(t *testing.T) {
+	serverURL, _ := newManagerTestServer(t)
+	manager := Manager{Directory: t.TempDir(), StateDirectory: t.TempDir(), ControlURL: serverURL}
+	results := make(chan error, 2)
+	var group sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			results <- manager.Enroll(context.Background(), "one-time-token")
+		}()
+	}
+	group.Wait()
+	close(results)
+
+	var success, already int
+	for err := range results {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrAlreadyEnrolled):
+			already++
+		default:
+			t.Fatalf("unexpected concurrent enrollment error: %v", err)
+		}
+	}
+	if success != 1 || already != 1 {
+		t.Fatalf("expected one enrollment and one rejection, got success=%d already=%d", success, already)
+	}
+	restarted := Manager{Directory: manager.Directory, StateDirectory: manager.StateDirectory, ControlURL: manager.ControlURL}
+	if !restarted.Enrolled() {
+		t.Fatal("restart did not recognize the committed material generation")
+	}
+	if _, err := restarted.TLSConfig(); err != nil {
+		t.Fatalf("restart could not load committed material: %v", err)
 	}
 }
 
