@@ -18,12 +18,16 @@ import (
 var ErrCapacityExceeded = errors.New("host capacity reservation exceeds the configured envelope")
 
 type Resources struct {
-	CPUmilli, MemoryBytes, PHPWorkers, DiskBytes, DatabaseConnections, IOMB, PIDs, ScratchBytes, NetworkMbps int64
+	CPUmilli    int64 `json:"cpuMilli"`
+	MemoryBytes int64 `json:"memoryBytes"`
+	PHPWorkers  int64 `json:"phpWorkers"`
+	PIDs        int64 `json:"pids"`
 }
 
 type Config struct {
-	Limit                Resources
-	OperationConcurrency map[string]int
+	Limit                Resources      `json:"limit"`
+	ScratchBytes         int64          `json:"scratchBytes"`
+	OperationConcurrency map[string]int `json:"operationConcurrency"`
 }
 
 type Reservation struct {
@@ -32,10 +36,12 @@ type Reservation struct {
 }
 
 type Snapshot struct {
-	Limit        Resources                    `json:"limit"`
-	Reserved     Resources                    `json:"reserved"`
-	Reservations int                          `json:"reservations"`
-	Operations   map[string]OperationSnapshot `json:"operations"`
+	Limit          Resources                    `json:"limit"`
+	Reserved       Resources                    `json:"reserved"`
+	Reservations   int                          `json:"reservations"`
+	Operations     map[string]OperationSnapshot `json:"operations"`
+	Degraded       bool                         `json:"degraded"`
+	DegradedReason string                       `json:"degradedReason,omitempty"`
 }
 
 type OperationSnapshot struct {
@@ -44,11 +50,13 @@ type OperationSnapshot struct {
 }
 
 type Manager struct {
-	mu           sync.Mutex
-	config       Config
-	reservations map[string]Resources
-	operations   map[string]chan struct{}
-	inUse        map[string]int
+	mu             sync.Mutex
+	config         Config
+	reservations   map[string]Resources
+	operations     map[string]chan struct{}
+	inUse          map[string]int
+	degraded       bool
+	degradedReason string
 }
 
 func New(config Config, existing []Reservation) (*Manager, error) {
@@ -57,9 +65,7 @@ func New(config Config, existing []Reservation) (*Manager, error) {
 	}
 	m := &Manager{config: config, reservations: map[string]Resources{}, operations: map[string]chan struct{}{}, inUse: map[string]int{}}
 	for _, r := range existing {
-		if err := m.reserveLocked(r.Name, r.Resources); err != nil {
-			return nil, fmt.Errorf("restore reservation %q: %w", r.Name, err)
-		}
+		m.restoreLocked(r)
 	}
 	return m, nil
 }
@@ -73,7 +79,7 @@ func DefaultConfig() Config {
 	if disk == 0 {
 		disk = 10 << 30
 	}
-	return Config{Limit: Resources{CPUmilli: int64(runtime.NumCPU()) * 800, MemoryBytes: mem * 80 / 100, PHPWorkers: 500, DiskBytes: disk * 80 / 100, DatabaseConnections: 200, IOMB: 1000, PIDs: 4096, ScratchBytes: disk / 10, NetworkMbps: 1000}, OperationConcurrency: map[string]int{"backup": 1, "restore": 1, "archive": 2, "usage": 1, "logs": 4, "database": 8}}
+	return Config{Limit: Resources{CPUmilli: int64(runtime.NumCPU()) * 800, MemoryBytes: mem * 80 / 100, PHPWorkers: 500, PIDs: 4096}, ScratchBytes: disk / 10, OperationConcurrency: map[string]int{"backup": 1, "restore": 1, "archive": 2, "usage": 1, "logs": 4, "database": 8}}
 }
 
 // ConfigFromEnv uses positive values only. Invalid values retain safe defaults.
@@ -87,12 +93,8 @@ func ConfigFromEnv() Config {
 	set("NUBIT_AGENT_CAPACITY_CPU_MILLI", &c.Limit.CPUmilli)
 	set("NUBIT_AGENT_CAPACITY_MEMORY_BYTES", &c.Limit.MemoryBytes)
 	set("NUBIT_AGENT_CAPACITY_PHP_WORKERS", &c.Limit.PHPWorkers)
-	set("NUBIT_AGENT_CAPACITY_DISK_BYTES", &c.Limit.DiskBytes)
-	set("NUBIT_AGENT_CAPACITY_DB_CONNECTIONS", &c.Limit.DatabaseConnections)
-	set("NUBIT_AGENT_CAPACITY_IO_MB", &c.Limit.IOMB)
 	set("NUBIT_AGENT_CAPACITY_PIDS", &c.Limit.PIDs)
-	set("NUBIT_AGENT_CAPACITY_SCRATCH_BYTES", &c.Limit.ScratchBytes)
-	set("NUBIT_AGENT_CAPACITY_NETWORK_MBPS", &c.Limit.NetworkMbps)
+	set("NUBIT_AGENT_CAPACITY_SCRATCH_BYTES", &c.ScratchBytes)
 	for name := range c.OperationConcurrency {
 		key := "NUBIT_AGENT_OPERATION_CONCURRENCY_" + name
 		if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
@@ -103,7 +105,7 @@ func ConfigFromEnv() Config {
 }
 
 func validate(c Config) error {
-	for name, v := range map[string]int64{"cpu": c.Limit.CPUmilli, "memory": c.Limit.MemoryBytes, "workers": c.Limit.PHPWorkers, "disk": c.Limit.DiskBytes, "db": c.Limit.DatabaseConnections, "io": c.Limit.IOMB, "pids": c.Limit.PIDs, "scratch": c.Limit.ScratchBytes, "network": c.Limit.NetworkMbps} {
+	for name, v := range map[string]int64{"cpu": c.Limit.CPUmilli, "memory": c.Limit.MemoryBytes, "workers": c.Limit.PHPWorkers, "pids": c.Limit.PIDs, "scratch": c.ScratchBytes} {
 		if v <= 0 {
 			return fmt.Errorf("capacity %s must be positive", name)
 		}
@@ -131,6 +133,22 @@ func (m *Manager) ReserveSite(name string, r Resources) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.reserveLocked(name, r)
+}
+func (m *Manager) restoreLocked(r Reservation) {
+	if err := m.reserveLocked(r.Name, r.Resources); err != nil {
+		m.reservations[r.Name] = r.Resources
+		m.degraded = true
+		m.degradedReason = "existing reservations exceed the measured capacity envelope"
+	}
+}
+
+// RestoreSite keeps durable state visible even when a smaller measured host
+// cannot currently fit it. The resulting degraded flag makes the condition
+// observable while new reservations remain subject to normal admission.
+func (m *Manager) RestoreSite(r Reservation) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.restoreLocked(r)
 }
 func (m *Manager) UpdateSite(name string, r Resources) error { return m.ReserveSite(name, r) }
 func (m *Manager) ReleaseSite(name string) {
@@ -176,14 +194,14 @@ func (m *Manager) Snapshot() Snapshot {
 	for name, limit := range m.config.OperationConcurrency {
 		ops[name] = OperationSnapshot{Limit: limit, InUse: m.inUse[name]}
 	}
-	return Snapshot{Limit: m.config.Limit, Reserved: m.totalLocked(), Reservations: len(m.reservations), Operations: ops}
+	return Snapshot{Limit: m.config.Limit, Reserved: m.totalLocked(), Reservations: len(m.reservations), Operations: ops, Degraded: m.degraded, DegradedReason: m.degradedReason}
 }
 
 // ScratchAvailable is a fail-safe preflight for operations which can expand a
 // full archive. It does not claim ownership of bytes; the operation's own
 // timeout and filesystem errors remain authoritative.
 func (m *Manager) ScratchAvailable(path string) bool {
-	return int64(diskFreeBytes(path)) >= m.config.Limit.ScratchBytes
+	return int64(diskFreeBytes(path)) >= m.config.ScratchBytes
 }
 func (m *Manager) totalLocked() Resources {
 	var out Resources
@@ -193,13 +211,13 @@ func (m *Manager) totalLocked() Resources {
 	return out
 }
 func add(a, b Resources) Resources {
-	return Resources{a.CPUmilli + b.CPUmilli, a.MemoryBytes + b.MemoryBytes, a.PHPWorkers + b.PHPWorkers, a.DiskBytes + b.DiskBytes, a.DatabaseConnections + b.DatabaseConnections, a.IOMB + b.IOMB, a.PIDs + b.PIDs, a.ScratchBytes + b.ScratchBytes, a.NetworkMbps + b.NetworkMbps}
+	return Resources{CPUmilli: a.CPUmilli + b.CPUmilli, MemoryBytes: a.MemoryBytes + b.MemoryBytes, PHPWorkers: a.PHPWorkers + b.PHPWorkers, PIDs: a.PIDs + b.PIDs}
 }
 func subtract(a, b Resources) Resources {
-	return Resources{a.CPUmilli - b.CPUmilli, a.MemoryBytes - b.MemoryBytes, a.PHPWorkers - b.PHPWorkers, a.DiskBytes - b.DiskBytes, a.DatabaseConnections - b.DatabaseConnections, a.IOMB - b.IOMB, a.PIDs - b.PIDs, a.ScratchBytes - b.ScratchBytes, a.NetworkMbps - b.NetworkMbps}
+	return Resources{CPUmilli: a.CPUmilli - b.CPUmilli, MemoryBytes: a.MemoryBytes - b.MemoryBytes, PHPWorkers: a.PHPWorkers - b.PHPWorkers, PIDs: a.PIDs - b.PIDs}
 }
 func fits(a, b Resources) bool {
-	return a.CPUmilli <= b.CPUmilli && a.MemoryBytes <= b.MemoryBytes && a.PHPWorkers <= b.PHPWorkers && a.DiskBytes <= b.DiskBytes && a.DatabaseConnections <= b.DatabaseConnections && a.IOMB <= b.IOMB && a.PIDs <= b.PIDs && a.ScratchBytes <= b.ScratchBytes && a.NetworkMbps <= b.NetworkMbps
+	return a.CPUmilli <= b.CPUmilli && a.MemoryBytes <= b.MemoryBytes && a.PHPWorkers <= b.PHPWorkers && a.PIDs <= b.PIDs
 }
 func memoryBytes() uint64 {
 	data, err := os.ReadFile("/proc/meminfo")
