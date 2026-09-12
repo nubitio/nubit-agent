@@ -78,6 +78,19 @@ jobs:
           sha256sum nubit-agent_linux_* > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Sign release artifacts
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.NUBIT_RELEASE_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -eu
+          [ -n "$RELEASE_SIGNING_PRIVATE_KEY" ] || { echo 'NUBIT_RELEASE_SIGNING_PRIVATE_KEY is required' >&2; exit 1; }
+          umask 077
+          printf '%s\n' "$RELEASE_SIGNING_PRIVATE_KEY" > signing-key.pem
+          for asset in dist/nubit-agent_linux_*; do
+            openssl pkeyutl -sign -inkey signing-key.pem -rawin -in "$asset" -out "$asset.sig"
+          done
+          rm -f signing-key.pem
+
       # Confirms the shipped binary reports the tag it was built from, so a
       # self-updating agent compares versions against something real.
       - name: Verify the embedded version
@@ -99,9 +112,7 @@ jobs:
         run: |
           set -eu
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-          else
-            gh release create "$TAG" dist/* \
-              --title "$TAG" \
-              --generate-notes
+            echo "release $TAG already exists; releases are immutable" >&2
+            exit 1
           fi
+          gh release create "$TAG" dist/* --title "$TAG" --generate-notes

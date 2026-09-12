@@ -93,7 +93,7 @@ jobs:
       - name: Dry run of the web profile on Debian 12
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:12-slim sh -c '
-            apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
+             apt-get update -qq >/dev/null && apt-get install -y -qq curl openssl >/dev/null
             sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci
           '
 
@@ -102,7 +102,7 @@ jobs:
       - name: Dry run of the mail profile on Debian 12
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:12-slim sh -c '
-            apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
+             apt-get update -qq >/dev/null && apt-get install -y -qq curl openssl >/dev/null
             sh scripts/install.sh --dry-run --profile web,mail --mail-relay mail.example.com --version v0.0.0-ci
           '
 
@@ -118,14 +118,14 @@ jobs:
       - name: Dry run of the web profile on Ubuntu 26.04
         run: |
           docker run --rm -v "$PWD:/src" -w /src ubuntu:26.04 sh -c '
-            apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
+             apt-get update -qq >/dev/null && apt-get install -y -qq curl openssl >/dev/null
             sh scripts/install.sh --dry-run --profile web --version v0.0.0-ci
           '
 
       - name: Accepts Ubuntu 26.04 arm64 with a warning
         run: |
           docker run --rm -v "$PWD:/src" -w /src ubuntu:26.04 sh -c '
-            apt-get update -qq >/dev/null && apt-get install -y -qq curl >/dev/null
+             apt-get update -qq >/dev/null && apt-get install -y -qq curl openssl >/dev/null
             mkdir -p /tmp/nubit-mock-bin
             printf "%s\n" "#!/bin/sh" "[ \"\$1\" = -m ] && { printf \"%s\\n\" aarch64; exit 0; }" "exec /bin/uname \"\$@\"" > /tmp/nubit-mock-bin/uname
             chmod 0755 /tmp/nubit-mock-bin/uname

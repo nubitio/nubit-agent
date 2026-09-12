@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -40,9 +41,9 @@ func TestNewerOnlyMovesForward(t *testing.T) {
 	}
 }
 
-// releaseServer serves the GitHub endpoints the updater consumes: the latest
-// release document, SHA256SUMS, and the platform asset itself.
-func releaseServer(t *testing.T, tag string, payload []byte, corruptSum bool) *httptest.Server {
+// releaseServer serves the tagged-release list, SHA256SUMS, asset, and detached
+// signature consumed by the updater.
+func releaseServer(t *testing.T, tag string, payload []byte, corruptSum, tamperSignature bool) (*httptest.Server, ed25519.PublicKey) {
 	t.Helper()
 
 	asset := AssetName(runtime.GOOS, runtime.GOARCH)
@@ -51,10 +52,15 @@ func releaseServer(t *testing.T, tag string, payload []byte, corruptSum bool) *h
 	if corruptSum {
 		digest = hex.EncodeToString(make([]byte, sha256.Size))
 	}
+	publicKey, privateKey, _ := ed25519.GenerateKey(nil)
+	signature := ed25519.Sign(privateKey, payload)
+	if tamperSignature {
+		signature[0] ^= 0xff
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/nubitio/nubit-agent/releases/latest", func(writer http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(writer, `{"tag_name":%q,"draft":false,"prerelease":false}`, tag)
+	mux.HandleFunc("/repos/nubitio/nubit-agent/releases", func(writer http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(writer, `[{"tag_name":%q,"draft":false,"prerelease":false}]`, tag)
 	})
 	mux.HandleFunc("/nubitio/nubit-agent/releases/download/"+tag+"/SHA256SUMS", func(writer http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(writer, "%s  %s\n", digest, asset)
@@ -62,14 +68,17 @@ func releaseServer(t *testing.T, tag string, payload []byte, corruptSum bool) *h
 	mux.HandleFunc("/nubitio/nubit-agent/releases/download/"+tag+"/"+asset, func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(payload)
 	})
+	mux.HandleFunc("/nubitio/nubit-agent/releases/download/"+tag+"/"+asset+".sig", func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(signature)
+	})
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return server
+	return server, publicKey
 }
 
-func stagedUpdater(t *testing.T, server *httptest.Server, current string) (*Updater, string) {
+func stagedUpdater(t *testing.T, server *httptest.Server, current string, publicKey ed25519.PublicKey) (*Updater, string) {
 	t.Helper()
 
 	binary := filepath.Join(t.TempDir(), "nubit-agent")
@@ -77,12 +86,13 @@ func stagedUpdater(t *testing.T, server *httptest.Server, current string) (*Upda
 		t.Fatalf("seed the current binary: %v", err)
 	}
 	updater, err := New(Config{
-		CurrentVersion: current,
-		Repository:     "nubitio/nubit-agent",
-		BinaryPath:     binary,
-		APIBaseURL:     server.URL,
-		DownloadURL:    server.URL,
-		HTTPClient:     server.Client(),
+		CurrentVersion:   current,
+		Repository:       "nubitio/nubit-agent",
+		BinaryPath:       binary,
+		APIBaseURL:       server.URL,
+		DownloadURL:      server.URL,
+		HTTPClient:       server.Client(),
+		SigningPublicKey: publicKey,
 	})
 	if err != nil {
 		t.Fatalf("build the updater: %v", err)
@@ -93,8 +103,8 @@ func stagedUpdater(t *testing.T, server *httptest.Server, current string) (*Upda
 
 func TestStageReplacesTheBinaryAndArmsRestart(t *testing.T) {
 	payload := []byte("new binary contents")
-	server := releaseServer(t, "v9.9.9", payload, false)
-	updater, binary := stagedUpdater(t, server, "v1.0.0")
+	server, key := releaseServer(t, "v9.9.9", payload, false, false)
+	updater, binary := stagedUpdater(t, server, "v1.0.0", key)
 
 	staged, err := updater.Stage(context.Background())
 	if err != nil {
@@ -124,8 +134,8 @@ func TestStageReplacesTheBinaryAndArmsRestart(t *testing.T) {
 }
 
 func TestStageRejectsAChecksumMismatch(t *testing.T) {
-	server := releaseServer(t, "v9.9.9", []byte("tampered"), true)
-	updater, binary := stagedUpdater(t, server, "v1.0.0")
+	server, key := releaseServer(t, "v9.9.9", []byte("tampered"), true, false)
+	updater, binary := stagedUpdater(t, server, "v1.0.0", key)
 
 	if _, err := updater.Stage(context.Background()); err == nil {
 		t.Fatal("Stage succeeded on a checksum mismatch, want an error")
@@ -152,8 +162,8 @@ func TestStageRejectsAChecksumMismatch(t *testing.T) {
 }
 
 func TestStageIsANoOpWhenAlreadyCurrent(t *testing.T) {
-	server := releaseServer(t, "v1.0.0", []byte("same version"), false)
-	updater, binary := stagedUpdater(t, server, "v1.0.0")
+	server, key := releaseServer(t, "v1.0.0", []byte("same version"), false, false)
+	updater, binary := stagedUpdater(t, server, "v1.0.0", key)
 
 	staged, err := updater.Stage(context.Background())
 	if err != nil {
@@ -178,8 +188,8 @@ func TestStageIsANoOpWhenAlreadyCurrent(t *testing.T) {
 func TestStageIgnoresPrereleases(t *testing.T) {
 	asset := AssetName(runtime.GOOS, runtime.GOARCH)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/nubitio/nubit-agent/releases/latest", func(writer http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(writer, `{"tag_name":"v9.9.9","draft":false,"prerelease":true}`)
+	mux.HandleFunc("/repos/nubitio/nubit-agent/releases", func(writer http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(writer, `[{"tag_name":"v9.9.9","draft":false,"prerelease":true}]`)
 	})
 	mux.HandleFunc("/nubitio/nubit-agent/releases/download/v9.9.9/"+asset, func(http.ResponseWriter, *http.Request) {
 		t.Error("a prerelease must never be downloaded")
@@ -187,12 +197,24 @@ func TestStageIgnoresPrereleases(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	updater, _ := stagedUpdater(t, server, "v1.0.0")
+	updater, _ := stagedUpdater(t, server, "v1.0.0", nil)
 	staged, err := updater.Stage(context.Background())
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if staged != "" || updater.RestartPending() {
 		t.Fatalf("staged a prerelease (%q, pending=%v)", staged, updater.RestartPending())
+	}
+}
+
+func TestStageRejectsAlteredArtifactWithValidChecksum(t *testing.T) {
+	server, key := releaseServer(t, "v9.9.9", []byte("altered"), false, true)
+	updater, binary := stagedUpdater(t, server, "v1.0.0", key)
+	if _, err := updater.Stage(context.Background()); err == nil {
+		t.Fatal("Stage accepted an altered signed artifact")
+	}
+	current, _ := os.ReadFile(binary)
+	if string(current) != "old binary" {
+		t.Fatalf("binary changed after invalid signature: %q", current)
 	}
 }

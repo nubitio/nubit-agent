@@ -16,7 +16,7 @@ profile=
 database_engine=${NUBIT_DATABASE_ENGINE:-mariadb}
 agent_token_from_cli=false
 mail_relay=${NUBIT_MAIL_RELAY:-}
-version=latest
+version=
 repository=${NUBIT_AGENT_REPOSITORY:-nubitio/nubit-agent}
 control_url=${NUBIT_CONTROL_URL:-}
 agent_token=${NUBIT_AGENT_TOKEN:-}
@@ -30,7 +30,7 @@ usage() {
   cat <<'USAGE'
 Usage: install.sh [options]
 
-  --version <tag>        Install a specific release (default: latest)
+  --version <tag>        Install a specific, immutable release tag (required)
   --profile web          Also install the Debian 12 or Ubuntu 26.04 web profile packages
   --profile web,mail     Also install Stalwart for shared-hosting mailboxes
   --database <engine>    Database server the web profile installs and the agent
@@ -178,6 +178,7 @@ esac
 [ "$(id -u)" = 0 ] || fail 'Run as root.'
 command -v curl >/dev/null 2>&1 || fail 'curl is required.'
 command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required.'
+command -v openssl >/dev/null 2>&1 || fail 'openssl (with Ed25519 support) is required.'
 
 case "$(uname -m)" in
   x86_64 | amd64) arch=amd64 ;;
@@ -212,14 +213,8 @@ if [ ! -f "$env_file" ] && [ -n "$agent_token" ] && [ -n "$enrollment_token" ]; 
   fail 'Use only NUBIT_AGENT_TOKEN/--agent-token for MVP installs; NUBIT_AGENT_ENROLLMENT_TOKEN/--enrollment-token is experimental future mTLS work and must not be configured together.'
 fi
 
-if [ "$version" = latest ]; then
-  tag=$(curl -fsSL "https://api.github.com/repos/${repository}/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -n 1)
-  [ -n "$tag" ] || fail "Could not resolve the latest release of ${repository}."
-else
-  tag=$version
-fi
+[ -n "$version" ] || fail 'An exact release tag is required; mutable latest releases are not supported.'
+tag=$version
 
 base="https://github.com/${repository}/releases/download/${tag}"
 printf 'Installing Nubit Agent %s (linux/%s)\n' "$tag" "$arch"
@@ -237,11 +232,22 @@ else
 
   curl -fsSL -o "$work/$asset" "$base/$asset" || fail "Could not download $base/$asset"
   curl -fsSL -o "$work/SHA256SUMS" "$base/SHA256SUMS" || fail "Could not download $base/SHA256SUMS"
+  curl -fsSL -o "$work/$asset.sig" "$base/$asset.sig" || fail "Could not download $base/$asset.sig"
 
   # Verify only the asset for this platform; the file lists every published one.
   ( cd "$work" && grep " \*\{0,1\}${asset}\$" SHA256SUMS | sha256sum -c - ) \
     >/dev/null 2>&1 || fail "Checksum verification failed for $asset."
   printf 'Checksum verified.\n'
+  public_key=$(mktemp)
+  trap "rm -rf '$work'; rm -f '$public_key'" EXIT INT TERM
+  cat > "$public_key" <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=
+-----END PUBLIC KEY-----
+KEY
+  openssl pkeyutl -verify -pubin -inkey "$public_key" -rawin -in "$work/$asset" -sigfile "$work/$asset.sig" >/dev/null 2>&1 \
+    || fail "Signature verification failed for $asset."
+  printf 'Signature verified.\n'
 fi
 
 # The agent reads the engine from its environment and speaks a different
