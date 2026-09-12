@@ -244,9 +244,11 @@ bundles Stalwart (`stalwart` + `stalwart-cli`, musl static): when
 stack (unattended `Bootstrap` singleton via `stalwart-cli apply`, RocksDB store,
 internal directory, DKIM on, ACME off) and the Agent administers it over JMAP on
 `http://127.0.0.1:8080`. A web-only node leaves the secret unset and `mail.*`
-commands are refused. **Pending:** the bare-metal `scripts/install.sh
---profile web,mail` still only downloads the binary — the systemd unit + bootstrap
-for the non-Docker path is follow-up. Mailbox *restore* remains assisted.
+commands are refused. The bare-metal `scripts/install.sh --profile web,mail`
+path pins Stalwart `v0.16.21` and verifies the target-specific SHA-256 before
+extraction; changing that version requires updating the corresponding digest in
+the installer. **Pending:** the systemd unit + bootstrap for the non-Docker path
+is follow-up. Mailbox *restore* remains assisted.
 
 Backups are **S3 object storage** (`NUBIT_BACKUP_S3_*` — MinIO locally, Wasabi
 in production; `NUBIT_BACKUP_S3_FORCE_PATH_STYLE=1` for MinIO). Each archive is a
