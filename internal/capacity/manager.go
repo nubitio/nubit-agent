@@ -35,6 +35,13 @@ type Reservation struct {
 	Resources Resources
 }
 
+type SiteAdmission struct {
+	Name       string
+	Generation uint64
+	Previous   Resources
+	Existed    bool
+}
+
 type Snapshot struct {
 	Limit          Resources                    `json:"limit"`
 	Reserved       Resources                    `json:"reserved"`
@@ -57,13 +64,14 @@ type Manager struct {
 	inUse          map[string]int
 	degraded       bool
 	degradedReason string
+	generations    map[string]uint64
 }
 
 func New(config Config, existing []Reservation) (*Manager, error) {
 	if err := validate(config); err != nil {
 		return nil, err
 	}
-	m := &Manager{config: config, reservations: map[string]Resources{}, operations: map[string]chan struct{}{}, inUse: map[string]int{}}
+	m := &Manager{config: config, reservations: map[string]Resources{}, operations: map[string]chan struct{}{}, inUse: map[string]int{}, generations: map[string]uint64{}}
 	for _, r := range existing {
 		m.restoreLocked(r)
 	}
@@ -127,12 +135,49 @@ func (m *Manager) reserveLocked(name string, r Resources) error {
 		return ErrCapacityExceeded
 	}
 	m.reservations[name] = r
+	if fits(total, m.config.Limit) {
+		m.degraded = false
+		m.degradedReason = ""
+	}
 	return nil
 }
 func (m *Manager) ReserveSite(name string, r Resources) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.reserveLocked(name, r)
+}
+
+func (m *Manager) BeginSite(name string, r Resources) (SiteAdmission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previous, existed := m.reservations[name]
+	if err := m.reserveLocked(name, r); err != nil {
+		return SiteAdmission{}, err
+	}
+	m.generations[name]++
+	return SiteAdmission{Name: name, Generation: m.generations[name], Previous: previous, Existed: existed}, nil
+}
+
+// FinishSite only changes state if this admission is still current. A late
+// timeout callback therefore cannot restore an older reservation over a newer
+// plan update.
+func (m *Manager) FinishSite(admission SiteAdmission, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.generations[admission.Name] != admission.Generation {
+		return
+	}
+	if !success {
+		if admission.Existed {
+			m.reservations[admission.Name] = admission.Previous
+		} else {
+			delete(m.reservations, admission.Name)
+		}
+	}
+	if fits(m.totalLocked(), m.config.Limit) {
+		m.degraded = false
+		m.degradedReason = ""
+	}
 }
 func (m *Manager) restoreLocked(r Reservation) {
 	if err := m.reserveLocked(r.Name, r.Resources); err != nil {
@@ -155,6 +200,11 @@ func (m *Manager) ReleaseSite(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.reservations, name)
+	m.generations[name]++
+	if fits(m.totalLocked(), m.config.Limit) {
+		m.degraded = false
+		m.degradedReason = ""
+	}
 }
 func (m *Manager) Reservation(name string) (Resources, bool) {
 	m.mu.Lock()

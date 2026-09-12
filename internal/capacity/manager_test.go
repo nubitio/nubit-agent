@@ -81,4 +81,8 @@ func TestExistingOvercommitStartsDegraded(t *testing.T) {
 	if !snapshot.Degraded || snapshot.Reservations != 1 {
 		t.Fatalf("expected degraded inventory, got %#v", snapshot)
 	}
+	m.ReleaseSite("legacy")
+	if m.Snapshot().Degraded {
+		t.Fatal("degraded state did not clear after capacity recovered")
+	}
 }

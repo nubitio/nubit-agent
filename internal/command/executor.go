@@ -82,6 +82,8 @@ type Executor struct {
 	rateLimitersMu sync.Mutex
 	rateLimiters   map[string]*tokenBucket
 	capacity       *capacity.Manager
+	timedOutMu     sync.Mutex
+	timedOut       map[string]Result
 
 	// tlsIssueWait is how long tls.letsencrypt.enable waits for Caddy to
 	// finish obtaining a certificate before reporting that none exists. Zero
@@ -230,6 +232,7 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		typeRates:      config.TypeRates,
 		exemptTypes:    exempt,
 		rateLimiters:   map[string]*tokenBucket{},
+		timedOut:       map[string]Result{},
 		tlsIssueWait:   config.TLSIssueWait,
 		tlsIssuePoll:   config.TLSIssuePollInterval,
 	}
@@ -309,6 +312,12 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	}
 
 	cacheResult := !resultIsNotCached(command.Type)
+	executor.timedOutMu.Lock()
+	terminalTimeout, timedOut := executor.timedOut[command.IdempotencyKey]
+	executor.timedOutMu.Unlock()
+	if timedOut {
+		return terminalTimeout, errors.New("command has a terminal timeout and is not safe to redeliver")
+	}
 	if cacheResult {
 		if result, found := executor.store.Get(command.IdempotencyKey); found {
 			return result, nil
@@ -417,6 +426,9 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 			Status:    "failed",
 			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
 		}
+		executor.timedOutMu.Lock()
+		executor.timedOut[command.IdempotencyKey] = failed
+		executor.timedOutMu.Unlock()
 		// Persist the terminal timeout so a redelivery cannot start a second
 		// copy while the original legacy provisioner is still unwinding.
 		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
@@ -941,8 +953,7 @@ func resultIsNotCached(commandType string) bool {
 	switch commandType {
 	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete,
 		SiteFilesUnzip, SiteFilesRename, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteCronReplace, SiteBackupList, SiteBackupCreate, SiteBackupRestore,
-		SiteBackupVerify, SiteAppAdminPassword:
+		SiteCronList, SiteCronReplace, SiteBackupList, SiteAppAdminPassword:
 		return true
 	default:
 		return false
