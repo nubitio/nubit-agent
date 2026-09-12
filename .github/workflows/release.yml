@@ -56,14 +56,26 @@ jobs:
 
       - name: Resolve the release tag
         id: release
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -eu
-          tag='${{ github.event.inputs.tag || github.ref_name }}'
+          tag="${RELEASE_TAG}"
           printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
             echo "release tag must be vMAJOR.MINOR.PATCH: $tag" >&2
             exit 1
           }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Regression test for unsafe release tag values
+        env:
+          RELEASE_TAG: "v1.2.3'; printf injected; #"
+        run: |
+          set -eu
+          if printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo 'unsafe release tag was accepted' >&2
+            exit 1
+          fi
 
       - name: Build linux/amd64 and linux/arm64
         env:
