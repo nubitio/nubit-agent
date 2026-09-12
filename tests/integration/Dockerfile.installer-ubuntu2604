@@ -24,7 +24,7 @@ COPY --from=build /release /fixture
 COPY . /src
 
 RUN test_key=$(sed -n '2p' /fixture/test-public.pem) \
-    && sed -i "s#MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=#${test_key}#" /src/scripts/install.sh \
+    && sed -i "s#MCowBQYDK2VwAyEAQZyV+Zz9anCSjL4FIJzxxIRz2oiaA4pqiFWh3vM6eYw=#${test_key}#" /src/scripts/install.sh \
     && chmod 0755 /usr/local/bin/curl /usr/local/bin/systemctl
 
 WORKDIR /src
