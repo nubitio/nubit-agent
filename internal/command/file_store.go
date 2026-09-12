@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/nubitio/nubit-agent/internal/durable"
 )
+
+var ErrResultTooLarge = errors.New("command result exceeds configured size limit")
 
 const (
 	DefaultResultLimit = 10000
@@ -69,9 +72,18 @@ func (store *FileStore) Save(key string, result Result) error {
 
 	previous := cloneResults(store.results)
 	store.results[key] = result
+	if contents, err := json.Marshal(map[string]Result{key: result}); err != nil {
+		store.results = previous
+		return err
+	} else if int64(len(contents)) > store.maxBytes {
+		store.results = previous
+		return fmt.Errorf("%w: %d bytes exceeds limit %d", ErrResultTooLarge, len(contents), store.maxBytes)
+	}
 	store.prune()
 	if err := store.persist(); err != nil {
-		store.results = previous
+		if !durable.IsCommitted(err) {
+			store.results = previous
+		}
 		return err
 	}
 
@@ -89,9 +101,16 @@ func cloneResults(results map[string]Result) map[string]Result {
 func (store *FileStore) Reset() error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	previous := store.results
 	store.results = map[string]Result{}
 
-	return store.persist()
+	if err := store.persist(); err != nil {
+		if !durable.IsCommitted(err) {
+			store.results = previous
+		}
+		return err
+	}
+	return nil
 }
 
 func (store *FileStore) persist() error {

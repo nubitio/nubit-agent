@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
@@ -16,7 +17,7 @@ type WriterLock struct{ file *os.File }
 // Acquire prevents a second daemon or a node-local mutating maintenance
 // command from touching the durable state at the same time.
 func Acquire(path string) (*WriterLock, error) {
-	if err := os.MkdirAll(filepathDir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -43,16 +44,4 @@ func (lock *WriterLock) Close() error {
 		return err
 	}
 	return closeErr
-}
-
-func filepathDir(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			if i == 0 {
-				return "/"
-			}
-			return path[:i]
-		}
-	}
-	return "."
 }

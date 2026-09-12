@@ -4,11 +4,26 @@
 package durable
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
+
+// CommitError reports an error after the replacement was renamed into place.
+// Callers must not roll back their in-memory value for this error.
+type CommitError struct{ Err error }
+
+func (err *CommitError) Error() string { return err.Err.Error() }
+func (err *CommitError) Unwrap() error { return err.Err }
+
+func IsCommitted(err error) bool {
+	var commitErr *CommitError
+	return errors.As(err, &commitErr)
+}
+
+var syncDirectory = func(dir *os.File) error { return dir.Sync() }
 
 // AtomicWrite replaces path only after the complete new value is written and
 // synced. Syncing the parent directory makes the rename durable on filesystems
@@ -53,12 +68,15 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	err = dir.Sync()
+	err = syncDirectory(dir)
 	closeErr := dir.Close()
 	if err != nil {
-		return err
+		return &CommitError{Err: err}
 	}
-	return closeErr
+	if closeErr != nil {
+		return &CommitError{Err: closeErr}
+	}
+	return nil
 }
 
 // CopyBounded copies at most limit bytes and reports whether more data exists.

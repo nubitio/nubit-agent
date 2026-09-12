@@ -9,9 +9,10 @@
 // secrets do not accumulate on disk; an operator who needs the raw payload
 // must look it up in the control plane's history.
 //
-// The log is unbounded and append-only on purpose for the MVP: there is no
-// rotation and no external sink. Retention and shipping to Loki/journald are
-// tracked as post-MVP work.
+// Record serializes append and rotation under one mutex. The active file and
+// every rotated file are fsynced, and the directory is fsynced after rotation.
+// A single event larger than maxBytes is rejected rather than violating the
+// configured bound.
 package audit
 
 import (
@@ -31,6 +32,8 @@ const (
 	DefaultMaxBytes = 16 << 20
 	DefaultMaxFiles = 3
 )
+
+var ErrEventTooLarge = errors.New("audit event exceeds configured size limit")
 
 // Event is the row written to the audit log. Fields are stable JSON names so
 // downstream tooling can match them without consulting the Go type.
@@ -117,6 +120,9 @@ func (logger *Logger) Record(ctx context.Context, event Event) error {
 		return fmt.Errorf("audit: encode event: %w", err)
 	}
 	payload = append(payload, '\n')
+	if logger.maxBytes > 0 && int64(len(payload)) > logger.maxBytes {
+		return fmt.Errorf("%w: %d bytes exceeds limit %d", ErrEventTooLarge, len(payload), logger.maxBytes)
+	}
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -169,9 +175,20 @@ func (logger *Logger) rotate() error {
 		return err
 	}
 	if logger.maxFiles >= 0 {
-		_ = os.Remove(fmt.Sprintf("%s.%d", logger.path, logger.maxFiles+1))
+		if err := os.Remove(fmt.Sprintf("%s.%d", logger.path, logger.maxFiles+1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("audit: remove old rotation: %w", err)
+		}
 	}
-	return nil
+	dir, err := os.Open(filepath.Dir(logger.path))
+	if err != nil {
+		return fmt.Errorf("audit: open directory after rotation: %w", err)
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return fmt.Errorf("audit: sync directory after rotation: %w", syncErr)
+	}
+	return closeErr
 }
 
 // HashPayload returns the hex-encoded SHA-256 of payload, matching the

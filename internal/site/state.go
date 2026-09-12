@@ -127,10 +127,12 @@ func (store *FileStateStore) Save(state State) error {
 	previous, existed := store.states[state.SiteID]
 	store.states[state.SiteID] = state
 	if err := store.persist(); err != nil {
-		if existed {
-			store.states[state.SiteID] = previous
-		} else {
-			delete(store.states, state.SiteID)
+		if !durable.IsCommitted(err) {
+			if existed {
+				store.states[state.SiteID] = previous
+			} else {
+				delete(store.states, state.SiteID)
+			}
 		}
 		return err
 	}
@@ -156,7 +158,9 @@ func (store *FileStateStore) Delete(siteID string) error {
 	}
 	delete(store.states, siteID)
 	if err := store.persist(); err != nil {
-		store.states[siteID] = previous
+		if !durable.IsCommitted(err) {
+			store.states[siteID] = previous
+		}
 		return err
 	}
 	return nil

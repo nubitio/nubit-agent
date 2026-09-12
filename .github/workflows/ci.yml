@@ -66,6 +66,22 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /dev/null ./cmd/nubit-agent
 
+  portable-durable:
+    name: Compile durable lock fallback (windows)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Compile Windows durable package
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: go test -c ./internal/durable -o /tmp/durable-windows.test.exe
+
   scripts:
     name: Installer script
     runs-on: ubuntu-latest
