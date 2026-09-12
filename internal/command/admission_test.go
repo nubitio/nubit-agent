@@ -28,8 +28,8 @@ func TestAdmissionRollsBackWhenResultCannotBeSaved(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected store failure")
 	}
-	if got := executor.CapacitySnapshot().Reservations; got != 0 {
-		t.Fatalf("reservation leaked after Save failure: %d", got)
+	if got := executor.CapacitySnapshot().Reservations; got != 1 {
+		t.Fatalf("successful host mutation lost its reservation after Save failure: %d", got)
 	}
 }
 

@@ -214,6 +214,22 @@ func TestRestoreRejectsTraversalAndSymlinkParents(t *testing.T) {
 	}
 }
 
+func TestCopyArchiveRejectsOversizedCompressedDownload(t *testing.T) {
+	reader := io.LimitReader(zeroReader{}, maxArchiveDownloadBytes+1)
+	if _, err := copyArchive(io.Discard, reader); err == nil || !strings.Contains(err.Error(), "download size limit") {
+		t.Fatalf("copyArchive error = %v, want download size limit", err)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
 func TestPruneKeepsEveryArchiveInsideTheRetentionWindow(t *testing.T) {
 	manager, blobs := testManager(t, t.TempDir())
 	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
