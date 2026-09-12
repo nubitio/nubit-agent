@@ -27,6 +27,7 @@ type Result struct {
 	CommandID string          `json:"commandId"`
 	Status    string          `json:"status"`
 	Output    json.RawMessage `json:"output"`
+	TimedOut  bool            `json:"timedOut,omitempty"`
 }
 
 type Store interface {
@@ -318,6 +319,9 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	if timedOut {
 		return terminalTimeout, errors.New("command has a terminal timeout and is not safe to redeliver")
 	}
+	if persisted, found := executor.store.Get(command.IdempotencyKey); found && persisted.TimedOut {
+		return persisted, errors.New("command has a terminal timeout and is not safe to redeliver")
+	}
 	if cacheResult {
 		if result, found := executor.store.Get(command.IdempotencyKey); found {
 			return result, nil
@@ -331,9 +335,10 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 		return Result{}, err
 	}
 	settled := false
+	executionSucceeded := false
 	defer func() {
 		if settled {
-			finishAdmission(err == nil)
+			finishAdmission(executionSucceeded)
 		}
 	}()
 
@@ -341,6 +346,7 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	result, err, settled = executor.runWithTimeout(parent, command, func(provisionerErr error) {
 		finishAdmission(provisionerErr == nil)
 	})
+	executionSucceeded = err == nil
 	if err != nil {
 		executor.recordAudit(command, payloadSHA, started, "failed")
 		return Result{}, err
@@ -409,6 +415,14 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 
 	select {
 	case <-ctx.Done():
+		// Process shutdown is not a command timeout. Do not leave a terminal
+		// tombstone behind: the command must be retried after restart.
+		if parent.Err() != nil {
+			if completed != nil {
+				go func() { outcome := <-done; completed(outcome.err) }()
+			}
+			return Result{}, fmt.Errorf("command cancelled: %w", parent.Err()), false
+		}
 		if completed != nil {
 			go func() { outcome := <-done; completed(outcome.err) }()
 		}
@@ -425,6 +439,7 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 			CommandID: command.ID,
 			Status:    "failed",
 			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
+			TimedOut:  true,
 		}
 		executor.timedOutMu.Lock()
 		executor.timedOut[command.IdempotencyKey] = failed
@@ -946,14 +961,11 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 }
 
 // resultIsNotCached lists command types whose result must not be replayed from
-// the idempotency store: read-through file/log/usage/backup queries that must
-// re-run, and site.app.admin-password, whose cached output is a WordPress
-// credential that would go stale the moment the admin changes it in wp-admin.
+// the idempotency store: read-only queries that should observe current state.
 func resultIsNotCached(commandType string) bool {
 	switch commandType {
-	case SiteFilesList, SiteFilesMkdir, SiteFilesWrite, SiteFilesRead, SiteFilesDelete,
-		SiteFilesUnzip, SiteFilesRename, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteCronReplace, SiteBackupList, SiteAppAdminPassword:
+	case SiteFilesList, SiteFilesRead, SiteUsage, SiteLogsRead,
+		SiteCronList, SiteBackupList, SiteAppAdminPassword:
 		return true
 	default:
 		return false

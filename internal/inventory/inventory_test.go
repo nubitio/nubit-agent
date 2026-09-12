@@ -20,13 +20,20 @@ func TestCollectIncludesCapabilitiesAndPHPRuntimes(t *testing.T) {
 	if len(snapshot.Capabilities) == 0 || len(snapshot.PHPRuntimes) != 1 {
 		t.Fatalf("unexpected inventory: %#v", snapshot)
 	}
-	found := false
+	wants := map[string]bool{
+		"site.backup.verify":      false,
+		"site.app.install":        false,
+		"site.app.update":         false,
+		"site.app.admin-password": false,
+	}
 	for _, capability := range snapshot.Capabilities {
-		if capability == "site.backup.verify" {
-			found = true
+		if _, ok := wants[capability]; ok {
+			wants[capability] = true
 		}
 	}
-	if !found {
-		t.Fatal("site.backup.verify capability is missing")
+	for capability, found := range wants {
+		if !found {
+			t.Fatalf("%s capability is missing", capability)
+		}
 	}
 }

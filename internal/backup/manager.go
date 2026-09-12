@@ -64,10 +64,11 @@ const (
 	// keepArchives is the floor: prune never drops a site below this many
 	// archives, even when a short retention window would. It is also the exact
 	// behaviour when the plan supplies no retentionDays.
-	keepArchives      = 7
-	archiveLayout     = "20060102T150405Z"
-	maxArchiveEntries = 10000
-	maxArchiveBytes   = 500 << 20
+	keepArchives            = 7
+	archiveLayout           = "20060102T150405Z"
+	maxArchiveEntries       = 10000
+	maxArchiveBytes         = 500 << 20
+	maxArchiveDownloadBytes = 500 << 20
 )
 
 // Manager creates, lists and restores per-site backups. Every archive is a
@@ -311,7 +312,7 @@ func (manager Manager) Restore(siteID, name string, confirmed bool) error {
 		_ = tmp.Close()
 		return fmt.Errorf("download backup: %w", err)
 	}
-	_, copyErr := io.Copy(tmp, reader)
+	_, copyErr := copyArchive(tmp, reader)
 	_ = reader.Close()
 	if copyErr != nil {
 		_ = tmp.Close()
@@ -363,7 +364,7 @@ func (manager Manager) Verify(siteID string) (VerifyResult, error) {
 		_ = tmp.Close()
 		return VerifyResult{}, fmt.Errorf("download backup: %w", err)
 	}
-	_, copyErr := io.Copy(tmp, reader)
+	_, copyErr := copyArchive(tmp, reader)
 	_ = reader.Close()
 	if copyErr != nil {
 		_ = tmp.Close()
@@ -386,6 +387,18 @@ func (manager Manager) Verify(siteID string) (VerifyResult, error) {
 	result.Archive = newest
 	result.DurationSeconds = int(time.Since(start).Round(time.Second) / time.Second)
 	return result, nil
+}
+
+func copyArchive(dst io.Writer, src io.Reader) (int64, error) {
+	limited := io.LimitReader(src, maxArchiveDownloadBytes+1)
+	n, err := io.Copy(dst, limited)
+	if err != nil {
+		return n, err
+	}
+	if n > maxArchiveDownloadBytes {
+		return n, errors.New("backup archive exceeds download size limit")
+	}
+	return n, nil
 }
 
 // inspectArchive walks the tarball into scratch, counting recoverable content
