@@ -239,6 +239,8 @@ else
     >/dev/null 2>&1 || fail "Checksum verification failed for $asset."
   printf 'Checksum verified.\n'
   public_key=$(mktemp)
+  # Both paths are intentionally captured now so cleanup also works on signals.
+  # shellcheck disable=SC2064
   trap "rm -rf '$work'; rm -f '$public_key'" EXIT INT TERM
   cat > "$public_key" <<'KEY'
 -----BEGIN PUBLIC KEY-----
