@@ -174,6 +174,7 @@ func main() {
 	}()
 
 	updater := startSelfUpdate(ctx)
+	executor.SetUpdater(updater)
 	if client := startPolling(ctx, executor, outbox, updater, stop, reporter, writerLock); client != nil {
 		go publishInventory(ctx, client, provisioner, 5*time.Minute)
 	}

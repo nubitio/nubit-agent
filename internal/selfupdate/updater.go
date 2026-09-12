@@ -175,6 +175,38 @@ func (updater *Updater) Stage(ctx context.Context) (string, error) {
 	return latest, nil
 }
 
+// StageRelease stages one exact release selected by the control plane. The
+// caller supplies the digest from its audited release record; the detached
+// signature is still fetched and verified with the embedded public key.
+func (updater *Updater) StageRelease(ctx context.Context, tag, expected string) (string, error) {
+	if !validReleaseTag(tag) {
+		return "", fmt.Errorf("invalid release tag %q", tag)
+	}
+	if len(expected) != sha256.Size*2 {
+		return "", errors.New("release checksum must be 64 hexadecimal characters")
+	}
+	for _, character := range expected {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return "", errors.New("release checksum must be hexadecimal")
+		}
+	}
+	if updater.RestartPending() {
+		return "", errors.New("an update is already staged")
+	}
+
+	asset := AssetName(runtime.GOOS, runtime.GOARCH)
+	signature, err := updater.signature(ctx, tag, asset)
+	if err != nil {
+		return "", err
+	}
+	if err := updater.replaceBinary(ctx, tag, asset, strings.ToLower(expected), signature); err != nil {
+		return "", err
+	}
+	updater.restartPending.Store(true)
+
+	return tag, nil
+}
+
 // AssetName is the release asset for a platform. Release, install script and
 // updater all derive the name here so they cannot drift apart.
 func AssetName(goos, goarch string) string {
