@@ -34,7 +34,7 @@ func TestReleaseSigningKeysAreConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read installer: %v", err)
 	}
-	if !strings.Contains(string(installer), "MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=") {
+	if !strings.Contains(string(installer), "MCowBQYDK2VwAyEAQZyV+Zz9anCSjL4FIJzxxIRz2oiaA4pqiFWh3vM6eYw=") {
 		t.Fatal("installer signing key differs from the embedded key")
 	}
 }
