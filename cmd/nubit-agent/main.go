@@ -18,6 +18,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/access"
 	"github.com/nubitio/nubit-agent/internal/audit"
 	"github.com/nubitio/nubit-agent/internal/backup"
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"github.com/nubitio/nubit-agent/internal/command"
 	"github.com/nubitio/nubit-agent/internal/controlplane"
 	"github.com/nubitio/nubit-agent/internal/cron"
@@ -142,7 +143,16 @@ func main() {
 	if mailManager, ok := mailProvisioner(); ok {
 		services = append(services, mailManager)
 	}
-	executor := command.NewExecutorWithConfig(command.ConfigFromEnv(), store, services...)
+	executorConfig := command.ConfigFromEnv()
+	executor := command.NewExecutorWithConfig(executorConfig, store, services...)
+	reservations := make([]capacity.Reservation, 0, len(siteStore.List()))
+	for _, state := range siteStore.List() {
+		reservations = append(reservations, capacity.Reservation{Name: state.SiteID, Resources: capacity.Resources{CPUmilli: int64(state.Resources.WithDefaults().Workers) * 50, MemoryBytes: int64(state.Resources.WithDefaults().Workers) * int64(state.Resources.WithDefaults().MemoryLimitMB) * 1024 * 1024, PHPWorkers: int64(state.Resources.WithDefaults().Workers), PIDs: int64(state.Resources.WithDefaults().Workers) + 8}})
+	}
+	if err := executor.RestoreCapacity(reservations); err != nil {
+		log.Fatalf("restore capacity reservations: %v", err)
+	}
+	reporter.SetCapacity(executor.CapacitySnapshot)
 	auditLogger, err := audit.New(filepath.Join(stateDir, "audit.log"))
 	if err != nil {
 		log.Fatalf("initialize audit log: %v", err)
@@ -169,7 +179,7 @@ func main() {
 
 	updater := startSelfUpdate(ctx)
 	if client := startPolling(ctx, executor, outbox, updater, stop, reporter); client != nil {
-		go publishInventory(ctx, client, provisioner, 5*time.Minute)
+		go publishInventory(ctx, client, provisioner, executor, 5*time.Minute)
 	}
 
 	mux := http.NewServeMux()
@@ -357,9 +367,9 @@ func renewCertificate(ctx context.Context, manager enrollment.Manager, interval,
 	}
 }
 
-func publishInventory(ctx context.Context, client *controlplane.Client, provider inventory.RuntimeProvider, interval time.Duration) {
+func publishInventory(ctx context.Context, client *controlplane.Client, provider inventory.RuntimeProvider, capacityProvider inventory.CapacityProvider, interval time.Duration) {
 	publish := func() {
-		snapshot, err := inventory.Collect(provider)
+		snapshot, err := inventory.Collect(provider, capacityProvider)
 		if err != nil {
 			log.Printf("nubit-agent: collect inventory failed: %v", err)
 			return

@@ -139,6 +139,17 @@ func RecordPoll(ctx context.Context, commandCount int) {
 	fetched.Add(ctx, int64(commandCount))
 }
 
+// RecordAdmission keeps capacity failures observable without attaching tenant
+// identifiers or payload data.
+func RecordAdmission(ctx context.Context, kind, outcome string) {
+	meter := otel.Meter(instrumentationName)
+	counter, err := meter.Int64Counter("nubit.agent.capacity.admissions")
+	if err != nil {
+		return
+	}
+	counter.Add(ctx, 1, metric.WithAttributes(attribute.String("nubit.capacity.kind", kind), attribute.String("nubit.capacity.outcome", outcome)))
+}
+
 // MarkError flags the span as failed without attaching the exception
 // message — those can contain paths, hosts or provider text.
 func MarkError(span trace.Span, err error) {

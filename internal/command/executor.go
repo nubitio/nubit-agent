@@ -13,6 +13,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/access"
 	"github.com/nubitio/nubit-agent/internal/audit"
 	"github.com/nubitio/nubit-agent/internal/backup"
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"github.com/nubitio/nubit-agent/internal/cron"
 	"github.com/nubitio/nubit-agent/internal/database"
 	"github.com/nubitio/nubit-agent/internal/files"
@@ -80,6 +81,7 @@ type Executor struct {
 	exemptTypes    map[string]bool
 	rateLimitersMu sync.Mutex
 	rateLimiters   map[string]*tokenBucket
+	capacity       *capacity.Manager
 
 	// tlsIssueWait is how long tls.letsencrypt.enable waits for Caddy to
 	// finish obtaining a certificate before reporting that none exists. Zero
@@ -94,6 +96,28 @@ type Executor struct {
 // of the pointer; the caller may keep using the same Logger afterwards.
 func (executor *Executor) SetAuditLogger(logger *audit.Logger) {
 	executor.audit = logger
+}
+
+// RestoreCapacity reconstructs reservations after a daemon restart from the
+// durable site inventory. It is intentionally explicit; no speculative
+// command concurrency or implicit state migration is performed.
+func (executor *Executor) RestoreCapacity(reservations []capacity.Reservation) error {
+	if executor.capacity == nil {
+		return nil
+	}
+	for _, reservation := range reservations {
+		if err := executor.capacity.ReserveSite(reservation.Name, reservation.Resources); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (executor *Executor) CapacitySnapshot() capacity.Snapshot {
+	if executor.capacity == nil {
+		return capacity.Snapshot{}
+	}
+	return executor.capacity.Snapshot()
 }
 
 type SiteProvisioner interface {
@@ -208,6 +232,13 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		tlsIssueWait:   config.TLSIssueWait,
 		tlsIssuePoll:   config.TLSIssuePollInterval,
 	}
+	if config.Capacity != nil {
+		if manager, err := capacity.New(*config.Capacity, nil); err == nil {
+			executor.capacity = manager
+		} else {
+			log.Printf("nubit-agent: capacity admission disabled: %v", err)
+		}
+	}
 	if executor.typeTimeouts == nil {
 		executor.typeTimeouts = map[string]time.Duration{}
 	}
@@ -285,6 +316,11 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 
 	payloadSHA := audit.HashPayload(command.Payload)
 	started := time.Now()
+	finishAdmission, err := executor.admit(parent, command)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { finishAdmission(err == nil) }()
 
 	result, err := executor.runWithTimeout(parent, command)
 	if err != nil {

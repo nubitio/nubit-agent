@@ -1,6 +1,7 @@
 package command
 
 import (
+	"github.com/nubitio/nubit-agent/internal/capacity"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,9 @@ import (
 // Zero or negative values disable the corresponding limit and are kept as
 // the documented escape hatch for debugging.
 type ExecutorConfig struct {
+	// Capacity is an optional host envelope. A nil value preserves the legacy
+	// in-process behaviour; production wires it from ConfigFromEnv.
+	Capacity *capacity.Config
 	// DefaultCommandTimeout is applied to every command type unless the type
 	// has an override in TypeTimeouts. Zero or negative disables the timeout.
 	DefaultCommandTimeout time.Duration
@@ -55,6 +59,7 @@ type ExecutorConfig struct {
 // a misconfigured agent should keep serving what it can.
 func ConfigFromEnv() ExecutorConfig {
 	config := ExecutorConfig{
+		Capacity:              func() *capacity.Config { c := capacity.ConfigFromEnv(); return &c }(),
 		DefaultCommandTimeout: 5 * time.Minute,
 		DefaultRatePerMinute:  30,
 		// Backups move a whole document root and every database dump through
