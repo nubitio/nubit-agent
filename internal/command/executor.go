@@ -965,7 +965,7 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 func resultIsNotCached(commandType string) bool {
 	switch commandType {
 	case SiteFilesList, SiteFilesRead, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteBackupList, SiteAppAdminPassword:
+		SiteCronList, SiteBackupList:
 		return true
 	default:
 		return false

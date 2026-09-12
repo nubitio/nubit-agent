@@ -153,5 +153,16 @@ func (outbox *FileOutbox) persist() error {
 	if err := os.Rename(temporary, outbox.path); err != nil {
 		return fmt.Errorf("%w: rename outbox: %v", ErrOutboxIO, err)
 	}
+	directory, err := os.Open(filepath.Dir(outbox.path))
+	if err != nil {
+		return fmt.Errorf("%w: open outbox directory: %v", ErrOutboxIO, err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return fmt.Errorf("%w: sync outbox directory: %v", ErrOutboxIO, err)
+	}
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("%w: close outbox directory: %v", ErrOutboxIO, err)
+	}
 	return nil
 }
