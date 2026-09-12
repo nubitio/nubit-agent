@@ -2,14 +2,20 @@ FROM golang:1.25-bookworm AS build
 
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /release/nubit-agent_linux_amd64 ./cmd/nubit-agent \
+RUN mkdir -p /release \
+    && apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/* \
+    && openssl genpkey -algorithm Ed25519 -out /tmp/test-signing-key.pem \
+    && openssl pkey -in /tmp/test-signing-key.pem -pubout -out /release/test-public.pem \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /release/nubit-agent_linux_amd64 ./cmd/nubit-agent \
     && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /release/nubit-agent_linux_arm64 ./cmd/nubit-agent \
-    && (cd /release && sha256sum nubit-agent_linux_amd64 nubit-agent_linux_arm64 > SHA256SUMS)
+    && for asset in /release/nubit-agent_linux_*; do openssl pkeyutl -sign -inkey /tmp/test-signing-key.pem -rawin -in "$asset" -out "$asset.sig"; done \
+    && (cd /release && sha256sum nubit-agent_linux_amd64 nubit-agent_linux_arm64 > SHA256SUMS) \
+    && rm -f /tmp/test-signing-key.pem
 
 FROM ubuntu:26.04
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tests/integration/curl-release-fixture /usr/local/bin/curl
@@ -17,7 +23,9 @@ COPY tests/integration/systemctl-installer /usr/local/bin/systemctl
 COPY --from=build /release /fixture
 COPY . /src
 
-RUN chmod 0755 /usr/local/bin/curl /usr/local/bin/systemctl
+RUN test_key=$(sed -n '2p' /fixture/test-public.pem) \
+    && sed -i "s#MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=#${test_key}#" /src/scripts/install.sh \
+    && chmod 0755 /usr/local/bin/curl /usr/local/bin/systemctl
 
 WORKDIR /src
 CMD ["sh", "scripts/test-installer-ubuntu2604.sh"]

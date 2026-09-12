@@ -1,11 +1,10 @@
 // Package selfupdate replaces the running agent binary with a newer tagged
 // release.
 //
-// Integrity is established by downloading SHA256SUMS from the same release and
-// verifying the binary against it before anything touches disk. That defends
-// against a truncated or corrupted download, not against a compromised release:
-// the checksum file shares its trust root with the binary. Artifact signing is
-// tracked in docs/roadmap.md.
+// Integrity is established by verifying both SHA256SUMS and an independent
+// Ed25519 signature from the release's detached .sig asset before anything
+// touches disk. Release discovery uses the tagged-release list, never the
+// mutable GitHub releases/latest route.
 //
 // The swap itself never interrupts work. Stage() prepares the replacement and
 // arms a flag; the caller restarts only at a point it knows is idle.
@@ -13,9 +12,13 @@ package selfupdate
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +33,11 @@ import (
 	"time"
 )
 
+// The private counterpart is held only in CI secret storage.
+//
+//go:embed release-signing-public-key.pem
+var releaseSigningPublicKeyPEM []byte
+
 const (
 	// DefaultRepository is the public repository releases are published to.
 	DefaultRepository = "nubitio/nubit-agent"
@@ -42,13 +50,14 @@ const (
 
 // Config configures an Updater. Only CurrentVersion is required.
 type Config struct {
-	CurrentVersion string
-	Repository     string
-	BinaryPath     string
-	Interval       time.Duration
-	APIBaseURL     string
-	DownloadURL    string
-	HTTPClient     *http.Client
+	CurrentVersion   string
+	Repository       string
+	BinaryPath       string
+	Interval         time.Duration
+	APIBaseURL       string
+	DownloadURL      string
+	HTTPClient       *http.Client
+	SigningPublicKey ed25519.PublicKey
 }
 
 // Updater checks for newer releases and stages them for the next restart.
@@ -67,6 +76,18 @@ func New(config Config) (*Updater, error) {
 	}
 	if config.HTTPClient == nil {
 		config.HTTPClient = &http.Client{Timeout: 10 * time.Minute}
+	}
+	if len(config.SigningPublicKey) == 0 {
+		block, _ := pem.Decode(releaseSigningPublicKeyPEM)
+		if block == nil {
+			return nil, errors.New("invalid embedded release signing public key")
+		}
+		key, err := x509.ParsePKIXPublicKey(block.Bytes)
+		publicKey, ok := key.(ed25519.PublicKey)
+		if err != nil || !ok || len(publicKey) != ed25519.PublicKeySize {
+			return nil, errors.New("invalid embedded release signing public key")
+		}
+		config.SigningPublicKey = publicKey
 	}
 	if config.APIBaseURL == "" {
 		config.APIBaseURL = "https://api.github.com"
@@ -142,7 +163,11 @@ func (updater *Updater) Stage(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if err := updater.replaceBinary(ctx, latest, asset, expected); err != nil {
+	signature, err := updater.signature(ctx, latest, asset)
+	if err != nil {
+		return "", err
+	}
+	if err := updater.replaceBinary(ctx, latest, asset, expected, signature); err != nil {
 		return "", err
 	}
 	updater.restartPending.Store(true)
@@ -157,29 +182,66 @@ func AssetName(goos, goarch string) string {
 }
 
 func (updater *Updater) latestVersion(ctx context.Context) (string, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/releases/latest", strings.TrimRight(updater.config.APIBaseURL, "/"), updater.config.Repository)
+	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=100", strings.TrimRight(updater.config.APIBaseURL, "/"), updater.config.Repository)
 	body, err := updater.get(ctx, endpoint)
 	if err != nil {
 		return "", err
 	}
 	defer body.Close()
 
-	var release struct {
+	var releases []struct {
 		TagName    string `json:"tag_name"`
 		Draft      bool   `json:"draft"`
 		Prerelease bool   `json:"prerelease"`
 	}
-	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&release); err != nil {
-		return "", fmt.Errorf("decode the latest release: %w", err)
+	if err := json.NewDecoder(io.LimitReader(body, 4<<20)).Decode(&releases); err != nil {
+		return "", fmt.Errorf("decode releases: %w", err)
 	}
-	if release.Draft || release.Prerelease {
-		return "", nil
+	best := ""
+	for _, release := range releases {
+		if !release.Draft && !release.Prerelease && validReleaseTag(release.TagName) && (best == "" || newer(best, release.TagName)) {
+			best = release.TagName
+		}
 	}
-	if release.TagName == "" {
-		return "", errors.New("the latest release has no tag")
-	}
+	return best, nil
+}
 
-	return release.TagName, nil
+func validReleaseTag(tag string) bool {
+	parts := strings.Split(tag, ".")
+	if len(parts) != 3 || !strings.HasPrefix(parts[0], "v") {
+		return false
+	}
+	for index, part := range parts {
+		if index == 0 {
+			part = strings.TrimPrefix(part, "v")
+		}
+		if part == "" {
+			return false
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (updater *Updater) signature(ctx context.Context, tag, asset string) ([]byte, error) {
+	endpoint := fmt.Sprintf("%s/%s/releases/download/%s/%s.sig", strings.TrimRight(updater.config.DownloadURL, "/"), updater.config.Repository, tag, asset)
+	body, err := updater.get(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	signature, err := io.ReadAll(io.LimitReader(body, ed25519.SignatureSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read signature for %s: %w", asset, err)
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return nil, fmt.Errorf("invalid signature size for %s", asset)
+	}
+	return signature, nil
 }
 
 func (updater *Updater) expectedChecksum(ctx context.Context, tag, asset string) (string, error) {
@@ -204,7 +266,7 @@ func (updater *Updater) expectedChecksum(ctx context.Context, tag, asset string)
 	return "", fmt.Errorf("SHA256SUMS has no entry for %s", asset)
 }
 
-func (updater *Updater) replaceBinary(ctx context.Context, tag, asset, expected string) error {
+func (updater *Updater) replaceBinary(ctx context.Context, tag, asset, expected string, signature []byte) error {
 	endpoint := fmt.Sprintf("%s/%s/releases/download/%s/%s", strings.TrimRight(updater.config.DownloadURL, "/"), updater.config.Repository, tag, asset)
 	body, err := updater.get(ctx, endpoint)
 	if err != nil {
@@ -236,6 +298,13 @@ func (updater *Updater) replaceBinary(ctx context.Context, tag, asset, expected 
 
 	if actual := hex.EncodeToString(digest.Sum(nil)); actual != expected {
 		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset, expected, actual)
+	}
+	contents, err := os.ReadFile(stagedPath)
+	if err != nil {
+		return fmt.Errorf("read the staged binary: %w", err)
+	}
+	if !ed25519.Verify(updater.config.SigningPublicKey, contents, signature) {
+		return fmt.Errorf("signature verification failed for %s", asset)
 	}
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
 		return fmt.Errorf("mark the staged binary executable: %w", err)
@@ -272,7 +341,7 @@ func (updater *Updater) get(ctx context.Context, endpoint string) (io.ReadCloser
 // A non-release current version ("dev") never updates: there is no ordering
 // between an untagged build and a release, so replacing it would be a guess.
 func newer(current, candidate string) bool {
-	if candidate == "" || current == "" || current == "dev" {
+	if !validReleaseTag(candidate) || !validReleaseTag(current) {
 		return false
 	}
 	currentParts, ok := semver(current)

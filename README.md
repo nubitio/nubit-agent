@@ -50,7 +50,7 @@ Agent-supported command families known in this codebase are:
 For a supported Debian 12 or Ubuntu 26.04 amd64 or arm64 server, run as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/nubitio/nubit-agent/main/scripts/install.sh | sh -s -- --version vX.Y.Z
 ```
 
 That installs the released binary at `/usr/local/bin/nubit-agent`, creates
@@ -85,20 +85,25 @@ from Control, configure `NUBIT_STEPCA_ROOT_CERT_PATH` with the pinned CA root,
 then run `nubit-agent enroll --token <token>` (or install with
 `--enrollment-token`). Do not configure both token types at once.
 
-`--dry-run` prints every action without touching the machine, and `--version
-<tag>` pins a specific release. Re-running the installer upgrades in place.
+`--dry-run` prints every action without touching the machine. `--version <tag>`
+is required and must be an exact release tag; the installer never follows the
+mutable `latest` release route. Re-running with a new tag upgrades in place.
 
 OpenTelemetry traces and metrics are opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT`.
 See [`docs/observability.md`](docs/observability.md).
 
-Every download is verified against the `SHA256SUMS` published with the release
-before anything is written.
+Every download is verified against `SHA256SUMS` and an independent Ed25519
+detached signature (`nubit-agent_linux_<arch>.sig`) before anything is written.
+The pinned public key is [`packaging/release-signing-public-key.pem`](packaging/release-signing-public-key.pem);
+the private key exists only as the `NUBIT_RELEASE_SIGNING_PRIVATE_KEY` GitHub
+Actions secret.
 
 ## Self-update
 
-A released agent checks `nubitio/nubit-agent` for a newer stable release every
-six hours. When it finds one it downloads the binary for its platform, verifies
-the checksum, swaps it in atomically — and then waits. **The restart only
+A released agent checks the immutable-tag release list for a newer stable
+release every six hours. When it finds one it downloads the binary for its
+platform, verifies both the checksum and independent Ed25519 signature, swaps
+it in atomically — and then waits. **The restart only
 happens between polls, never with a command in flight**, so an update can never
 land halfway through provisioning a site. Exiting is what applies it: systemd's
 `Restart=always` starts the replacement.
@@ -113,9 +118,12 @@ Source builds report version `dev` and never self-update: an untagged binary has
 no ordering against a release, so replacing it would be a guess. Draft and
 pre-release tags are ignored.
 
-Checksums establish that the download is intact, not that the release is
-authentic — they share a trust root with the binary. Artifact signing is tracked
-in [`docs/roadmap.md`](docs/roadmap.md).
+Checksums establish integrity; the detached Ed25519 signature establishes
+release authenticity independently of `SHA256SUMS`. A missing or invalid
+signature rejects the update and leaves the running binary untouched.
+Release tags accepted by the installer, updater, and release workflow are only
+stable `vMAJOR.MINOR.PATCH` tags; `latest`, prereleases, and arbitrary tag names
+are rejected.
 
 ## Local development
 
@@ -201,8 +209,8 @@ lack that equivalent operator-external real-VM validation.
 Review the installation actions before running them:
 
 ```bash
-sudo sh scripts/install.sh --dry-run --profile web
-sudo sh scripts/install.sh --profile web
+sudo sh scripts/install.sh --dry-run --profile web --version vX.Y.Z
+sudo sh scripts/install.sh --profile web --version vX.Y.Z
 ```
 
 On Debian and Ubuntu it enables the `packages.sury.org` PHP repository with a
