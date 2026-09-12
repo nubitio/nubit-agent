@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nubitio/nubit-agent/internal/durable"
@@ -62,6 +63,8 @@ type materialManifest struct {
 	CA          string `json:"ca"`
 }
 
+var materialWriter sync.Mutex
+
 // ErrNotEnrolled is returned by operations that require an existing
 // certificate when none has been written yet.
 var ErrNotEnrolled = errors.New("agent is not enrolled")
@@ -77,6 +80,8 @@ var ErrAlreadyEnrolled = errors.New("agent is already enrolled")
 // non-expired certificate is already on disk. The caller can wipe the
 // material (or wait for the renewal loop to handle it) and retry.
 func (manager Manager) Enroll(ctx context.Context, token string) error {
+	materialWriter.Lock()
+	defer materialWriter.Unlock()
 	lock, err := manager.acquireWriterLock()
 	if err != nil {
 		return err
@@ -150,6 +155,8 @@ func (manager Manager) alreadyEnrolled(now time.Time) bool {
 // reissue the certificate. The renewal is signed with the existing mTLS
 // identity, so the caller must have already enrolled.
 func (manager Manager) Renew(ctx context.Context) error {
+	materialWriter.Lock()
+	defer materialWriter.Unlock()
 	lock, err := manager.acquireWriterLock()
 	if err != nil {
 		return err
