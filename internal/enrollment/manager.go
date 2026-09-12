@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -51,7 +52,15 @@ const (
 	keyFile         = "agent-key.pem"
 	certificateFile = "agent-cert.pem"
 	caChainFile     = "ca-cert.pem"
+	manifestFile    = "material-manifest.json"
 )
+
+type materialManifest struct {
+	Generation  string `json:"generation"`
+	Key         string `json:"key"`
+	Certificate string `json:"certificate"`
+	CA          string `json:"ca"`
+}
 
 // ErrNotEnrolled is returned by operations that require an existing
 // certificate when none has been written yet.
@@ -299,6 +308,15 @@ func (manager Manager) persistMaterial(keyPEM []byte, response *EnrollResponse) 
 	if err := os.MkdirAll(manager.Directory, 0o750); err != nil {
 		return err
 	}
+	return manager.persistGeneration(keyPEM, response)
+}
+
+func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse) error {
+	generation := fmt.Sprintf("generation-%d", time.Now().UnixNano())
+	generationDir := filepath.Join(manager.Directory, generation)
+	if err := os.Mkdir(generationDir, 0o700); err != nil {
+		return err
+	}
 	files := []struct {
 		name string
 		data []byte
@@ -309,6 +327,21 @@ func (manager Manager) persistMaterial(keyPEM []byte, response *EnrollResponse) 
 		{caChainFile, []byte(caBundleFor(response)), 0o644},
 	}
 	for _, file := range files {
+		if err := writeAtomic(filepath.Join(generationDir, file.name), file.data, file.mode); err != nil {
+			return err
+		}
+	}
+	manifest := materialManifest{Generation: generation, Key: filepath.Join(generation, keyFile), Certificate: filepath.Join(generation, certificateFile), CA: filepath.Join(generation, caChainFile)}
+	contents, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(filepath.Join(manager.Directory, manifestFile), contents, 0o600); err != nil {
+		return err
+	}
+	// Preserve the legacy paths for older tooling; readers use the committed
+	// manifest and therefore never depend on these compatibility mirrors.
+	for _, file := range files {
 		if err := writeAtomic(filepath.Join(manager.Directory, file.name), file.data, file.mode); err != nil {
 			return err
 		}
@@ -317,20 +350,11 @@ func (manager Manager) persistMaterial(keyPEM []byte, response *EnrollResponse) 
 }
 
 func (manager Manager) persistCertificate(response *EnrollResponse) error {
-	files := []struct {
-		name string
-		data []byte
-		mode os.FileMode
-	}{
-		{certificateFile, []byte(response.Certificate), 0o644},
-		{caChainFile, []byte(caBundleFor(response)), 0o644},
+	key, err := os.ReadFile(manager.materialPath(keyFile))
+	if err != nil {
+		return err
 	}
-	for _, file := range files {
-		if err := writeAtomic(filepath.Join(manager.Directory, file.name), file.data, file.mode); err != nil {
-			return err
-		}
-	}
-	return nil
+	return manager.persistGeneration(key, response)
 }
 
 func caBundleFor(response *EnrollResponse) string {
@@ -340,8 +364,30 @@ func caBundleFor(response *EnrollResponse) string {
 	return response.CACertificate
 }
 
+func (manager Manager) materialPath(name string) string {
+	contents, err := os.ReadFile(filepath.Join(manager.Directory, manifestFile))
+	if err == nil {
+		var manifest materialManifest
+		if json.Unmarshal(contents, &manifest) == nil && manifest.Generation != "" {
+			var relative string
+			switch name {
+			case keyFile:
+				relative = manifest.Key
+			case certificateFile:
+				relative = manifest.Certificate
+			case caChainFile:
+				relative = manifest.CA
+			}
+			if relative != "" {
+				return filepath.Join(manager.Directory, relative)
+			}
+		}
+	}
+	return filepath.Join(manager.Directory, name)
+}
+
 func (manager Manager) loadPrivateKey() (*ecdsa.PrivateKey, error) {
-	keyPEM, err := os.ReadFile(filepath.Join(manager.Directory, keyFile))
+	keyPEM, err := os.ReadFile(manager.materialPath(keyFile))
 	if err != nil {
 		return nil, err
 	}
@@ -364,11 +410,11 @@ func (manager Manager) loadPrivateKey() (*ecdsa.PrivateKey, error) {
 // authenticate against Nubit Control. It loads the cert + key on every call
 // so a renewed certificate is picked up without restarting the agent.
 func (manager Manager) TLSConfig() (*tls.Config, error) {
-	certificate, err := tls.LoadX509KeyPair(filepath.Join(manager.Directory, certificateFile), filepath.Join(manager.Directory, keyFile))
+	certificate, err := tls.LoadX509KeyPair(manager.materialPath(certificateFile), manager.materialPath(keyFile))
 	if err != nil {
 		return nil, err
 	}
-	caPEM, err := os.ReadFile(filepath.Join(manager.Directory, caChainFile))
+	caPEM, err := os.ReadFile(manager.materialPath(caChainFile))
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +427,7 @@ func (manager Manager) TLSConfig() (*tls.Config, error) {
 		MinVersion: tls.VersionTLS13,
 		RootCAs:    roots,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			current, err := tls.LoadX509KeyPair(filepath.Join(manager.Directory, certificateFile), filepath.Join(manager.Directory, keyFile))
+			current, err := tls.LoadX509KeyPair(manager.materialPath(certificateFile), manager.materialPath(keyFile))
 			return &current, err
 		},
 	}, nil
@@ -391,11 +437,11 @@ func (manager Manager) TLSConfig() (*tls.Config, error) {
 // signed by the persisted CA bundle, and unexpired. It returns the parsed
 // certificate so the caller can log expiry information without re-parsing.
 func (manager Manager) VerifyCertificate() (*x509.Certificate, error) {
-	certPEM, err := os.ReadFile(filepath.Join(manager.Directory, certificateFile))
+	certPEM, err := os.ReadFile(manager.materialPath(certificateFile))
 	if err != nil {
 		return nil, err
 	}
-	caPEM, err := os.ReadFile(filepath.Join(manager.Directory, caChainFile))
+	caPEM, err := os.ReadFile(manager.materialPath(caChainFile))
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +464,7 @@ func (manager Manager) VerifyCertificate() (*x509.Certificate, error) {
 
 // CertificateExpiry returns the NotAfter of the persisted agent certificate.
 func (manager Manager) CertificateExpiry() (time.Time, error) {
-	contents, err := os.ReadFile(filepath.Join(manager.Directory, certificateFile))
+	contents, err := os.ReadFile(manager.materialPath(certificateFile))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -443,7 +489,7 @@ func (manager Manager) NeedsRenewal(now time.Time, before time.Duration) bool {
 // Enrolled reports whether the persisted material is complete.
 func (manager Manager) Enrolled() bool {
 	for _, name := range []string{keyFile, certificateFile, caChainFile} {
-		if _, err := os.Stat(filepath.Join(manager.Directory, name)); err != nil {
+		if _, err := os.Stat(manager.materialPath(name)); err != nil {
 			return false
 		}
 	}

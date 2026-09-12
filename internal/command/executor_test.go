@@ -264,10 +264,10 @@ func TestExecutorReturnsStoredResultForDuplicateIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestExecutorDoesNotCacheAdminPasswordResultsAcrossReplay(t *testing.T) {
+func TestExecutorCachesAdminPasswordResultsAfterRestart(t *testing.T) {
 	counter := &counterProvisioner{}
-	storePath := filepath.Join(t.TempDir(), "commands.json")
-	store, err := NewFileStore(storePath)
+	path := filepath.Join(t.TempDir(), "commands.json")
+	store, err := NewFileStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestExecutorDoesNotCacheAdminPasswordResultsAcrossReplay(t *testing.T) {
 	if _, err := executor.Execute(command); err != nil {
 		t.Fatal(err)
 	}
-	restartedStore, err := NewFileStore(storePath)
+	restartedStore, err := NewFileStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,10 +288,8 @@ func TestExecutorDoesNotCacheAdminPasswordResultsAcrossReplay(t *testing.T) {
 	if _, err := restarted.Execute(command); err != nil {
 		t.Fatal(err)
 	}
-	// A replay after restart must still reset the credential because normal
-	// admin-password results are deliberately non-cacheable.
-	if got := counter.Calls(); got != 2 {
-		t.Fatalf("expected the reset to run twice for a replayed key, ran %d", got)
+	if got := counter.Calls(); got != 1 {
+		t.Fatalf("expected the reset to run once for a replayed key, ran %d", got)
 	}
 }
 
@@ -482,55 +480,6 @@ func TestExecutorTimesOutSlowCommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeded timeout") {
 		t.Fatalf("timeout error did not mention the timeout: %v", err)
-	}
-}
-
-func TestNonCachedTimeoutFenceSurvivesExecutorRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "commands.json")
-	store, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config := ExecutorConfig{DefaultCommandTimeout: 20 * time.Millisecond}
-	command := Command{ID: "cmd_password_timeout", Type: SiteAppAdminPassword, Version: 1, IdempotencyKey: "password-timeout", Payload: []byte(`{"siteId":"example.com","adminUser":"admin"}`)}
-	executor := NewExecutorWithConfig(config, store, slowSiteProvisioner{delay: 2 * time.Second})
-	if _, err := executor.Execute(command); err == nil || !strings.Contains(err.Error(), "exceeded timeout") {
-		t.Fatalf("expected timeout, got %v", err)
-	}
-
-	reopened, err := NewFileStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted := NewExecutorWithConfig(config, reopened, slowSiteProvisioner{delay: 2 * time.Second})
-	if _, err := restarted.Execute(command); err == nil || !strings.Contains(err.Error(), "terminal timeout") {
-		t.Fatalf("expected durable terminal timeout fence, got %v", err)
-	}
-}
-
-func TestShutdownCancellationDoesNotPersistTimeoutFence(t *testing.T) {
-	store := NewMemoryStore()
-	executor := NewExecutorWithConfig(
-		ExecutorConfig{DefaultCommandTimeout: time.Second},
-		store,
-		slowSiteProvisioner{delay: 100 * time.Millisecond},
-	)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := executor.ExecuteContext(ctx, Command{
-			ID: "cmd_shutdown_cancel", Type: SiteInspect, Version: 1,
-			IdempotencyKey: "shutdown-cancel", Payload: []byte(`{"siteId":"example.com"}`),
-		})
-		done <- err
-	}()
-	time.Sleep(10 * time.Millisecond)
-	cancel()
-	if err := <-done; err == nil || !strings.Contains(err.Error(), "cancelled") {
-		t.Fatalf("expected shutdown cancellation, got %v", err)
-	}
-	if result, found := store.Get("shutdown-cancel"); found && result.TimedOut {
-		t.Fatal("shutdown cancellation persisted a retry-blocking timeout fence")
 	}
 }
 

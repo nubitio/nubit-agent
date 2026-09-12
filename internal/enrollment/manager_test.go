@@ -58,6 +58,13 @@ func TestEnrollStoresMatchingCertificateAndPrivateKey(t *testing.T) {
 	if _, err := manager.TLSConfig(); err != nil {
 		t.Fatal(err)
 	}
+	restarted := Manager{Directory: directory, StateDirectory: stateDirectory, ControlURL: server.URL}
+	if !restarted.Enrolled() {
+		t.Fatal("expected committed enrollment generation after restart")
+	}
+	if _, err := restarted.TLSConfig(); err != nil {
+		t.Fatalf("restart could not load committed generation: %v", err)
+	}
 	info, err := os.Stat(filepath.Join(directory, "agent-key.pem"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("unexpected private key permissions: %v %v", info, err)
