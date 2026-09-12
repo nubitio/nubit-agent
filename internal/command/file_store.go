@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/nubitio/nubit-agent/internal/durable"
 )
@@ -40,6 +42,21 @@ func NewFileStore(path string) (*FileStore, error) {
 	if err := json.Unmarshal(contents, &store.results); err != nil {
 		return nil, err
 	}
+	if store.results == nil {
+		return nil, durable.Invalid(path, errors.New("expected an object, got null"))
+	}
+	if err := store.enforceLimits(""); err != nil {
+		return nil, err
+	}
+	normalized, err := json.Marshal(store.results)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(contents, normalized) {
+		if err := store.persist(); err != nil {
+			return nil, err
+		}
+	}
 
 	return store, nil
 }
@@ -54,6 +71,22 @@ func NewFileStoreWithLimits(path string, maxEntries int, maxBytes int64) (*FileS
 	}
 	if maxBytes > 0 {
 		store.maxBytes = maxBytes
+	}
+	before, err := json.Marshal(store.results)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.enforceLimits(""); err != nil {
+		return nil, err
+	}
+	after, err := json.Marshal(store.results)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(before, after) {
+		if err := store.persist(); err != nil {
+			return nil, err
+		}
 	}
 	return store, nil
 }
@@ -71,6 +104,9 @@ func (store *FileStore) Save(key string, result Result) error {
 	defer store.mu.Unlock()
 
 	previous := cloneResults(store.results)
+	if result.CreatedAt.IsZero() {
+		result.CreatedAt = time.Now().UTC()
+	}
 	store.results[key] = result
 	if contents, err := json.Marshal(map[string]Result{key: result}); err != nil {
 		store.results = previous
@@ -79,7 +115,14 @@ func (store *FileStore) Save(key string, result Result) error {
 		store.results = previous
 		return fmt.Errorf("%w: %d bytes exceeds limit %d", ErrResultTooLarge, len(contents), store.maxBytes)
 	}
-	store.prune()
+	store.prune(key)
+	if contents, err := json.Marshal(store.results); err != nil {
+		store.results = previous
+		return err
+	} else if int64(len(contents)) > store.maxBytes {
+		store.results = previous
+		return fmt.Errorf("%w: serialized results are %d bytes, limit is %d", ErrResultTooLarge, len(contents), store.maxBytes)
+	}
 	if err := store.persist(); err != nil {
 		if !durable.IsCommitted(err) {
 			store.results = previous
@@ -126,24 +169,62 @@ func (store *FileStore) persist() error {
 	return durable.AtomicWrite(store.path, contents, 0o600)
 }
 
-func (store *FileStore) prune() {
+func (store *FileStore) enforceLimits(protected string) error {
+	if store.results == nil {
+		return durable.Invalid(store.path, errors.New("expected an object, got null"))
+	}
+	store.prune(protected)
+	contents, err := json.Marshal(store.results)
+	if err != nil {
+		return err
+	}
+	if int64(len(contents)) > store.maxBytes {
+		return fmt.Errorf("%w: serialized results are %d bytes, limit is %d", ErrResultTooLarge, len(contents), store.maxBytes)
+	}
+	return nil
+}
+
+func (store *FileStore) prune(protected string) {
 	for len(store.results) > store.maxEntries {
-		delete(store.results, oldestKey(store.results))
+		key, ok := oldestEvictableKey(store.results, protected)
+		if !ok {
+			return
+		}
+		delete(store.results, key)
 	}
 	for {
 		contents, err := json.Marshal(store.results)
 		if err != nil || int64(len(contents)) <= store.maxBytes || len(store.results) == 0 {
 			return
 		}
-		delete(store.results, oldestKey(store.results))
+		key, ok := oldestEvictableKey(store.results, protected)
+		if !ok {
+			return
+		}
+		delete(store.results, key)
 	}
 }
 
-func oldestKey(results map[string]Result) string {
+func oldestEvictableKey(results map[string]Result, protected string) (string, bool) {
 	keys := make([]string, 0, len(results))
 	for key := range results {
-		keys = append(keys, key)
+		if key != protected {
+			keys = append(keys, key)
+		}
 	}
-	sort.Strings(keys)
-	return keys[0]
+	if len(keys) == 0 {
+		return "", false
+	}
+	// Zero timestamps are legacy entries and therefore oldest. Ties are
+	// deterministic, but age—not the key name—drives eviction.
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := storeResultTime(results[keys[i]]), storeResultTime(results[keys[j]])
+		if left.Equal(right) {
+			return keys[i] < keys[j]
+		}
+		return left.Before(right)
+	})
+	return keys[0], true
 }
+
+func storeResultTime(result Result) time.Time { return result.CreatedAt }

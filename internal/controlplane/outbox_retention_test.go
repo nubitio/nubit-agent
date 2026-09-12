@@ -3,10 +3,21 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestFileOutboxRejectsNullState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.json")
+	if err := os.WriteFile(path, []byte("null"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileOutbox(path); !errors.Is(err, ErrOutboxCorrupt) {
+		t.Fatalf("expected corrupt null state, got %v", err)
+	}
+}
 
 func TestFileOutboxRejectsNewResultAtConfiguredLimit(t *testing.T) {
 	outbox, err := NewFileOutboxWithLimits(filepath.Join(t.TempDir(), "outbox.json"), 2, 1<<20)

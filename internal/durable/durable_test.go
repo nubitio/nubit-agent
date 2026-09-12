@@ -65,3 +65,24 @@ func TestAtomicWriteKeepsCommittedValueWhenDirectorySyncFails(t *testing.T) {
 		t.Fatalf("in-memory commit was not reflected on disk: %q", contents)
 	}
 }
+
+func TestAtomicWriteClassifiesDirectoryOpenFailureAsCommitted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := AtomicWrite(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := openDirectory
+	openDirectory = func(string) (*os.File, error) { return nil, os.ErrPermission }
+	defer func() { openDirectory = previous }()
+	if err := AtomicWrite(path, []byte("new"), 0o600); !IsCommitted(err) {
+		t.Fatalf("expected committed error, got %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "new" {
+		t.Fatalf("expected replacement to remain visible, got %q", contents)
+	}
+}

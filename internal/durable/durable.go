@@ -24,6 +24,7 @@ func IsCommitted(err error) bool {
 }
 
 var syncDirectory = func(dir *os.File) error { return dir.Sync() }
+var openDirectory = os.Open
 
 // AtomicWrite replaces path only after the complete new value is written and
 // synced. Syncing the parent directory makes the rename durable on filesystems
@@ -64,9 +65,11 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(temporary)
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	dir, err := openDirectory(filepath.Dir(path))
 	if err != nil {
-		return err
+		// Rename has already made the new value visible. Do not let callers
+		// restore their old in-memory value and overwrite this committed file.
+		return &CommitError{Err: err}
 	}
 	err = syncDirectory(dir)
 	closeErr := dir.Close()

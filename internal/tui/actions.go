@@ -70,11 +70,19 @@ func runNodeReset(stateDir string, daemonRunning bool) (site.ResetResult, error)
 	if err != nil {
 		return res, err
 	}
-	if cs, csErr := command.NewFileStore(filepath.Join(stateDir, "commands.json")); csErr == nil {
-		_ = cs.Reset()
+	cs, err := command.NewFileStore(filepath.Join(stateDir, "commands.json"))
+	if err != nil {
+		return res, fmt.Errorf("load command results for reset: %w", err)
 	}
-	if ob, obErr := controlplane.NewFileOutbox(filepath.Join(stateDir, outboxFile)); obErr == nil {
-		_ = ob.Reset()
+	if err := cs.Reset(); err != nil {
+		return res, fmt.Errorf("reset command results: %w", err)
+	}
+	ob, err := controlplane.NewFileOutbox(filepath.Join(stateDir, outboxFile))
+	if err != nil {
+		return res, fmt.Errorf("load outbox for reset: %w", err)
+	}
+	if err := ob.Reset(); err != nil {
+		return res, fmt.Errorf("reset outbox: %w", err)
 	}
 	return res, nil
 }

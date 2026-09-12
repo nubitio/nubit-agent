@@ -111,6 +111,9 @@ func NewFileStateStore(path string) (*FileStateStore, error) {
 	if err := json.Unmarshal(contents, &store.states); err != nil {
 		return nil, err
 	}
+	if store.states == nil {
+		return nil, durable.Invalid(path, errors.New("expected an object, got null"))
+	}
 	return store, nil
 }
 

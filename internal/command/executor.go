@@ -28,6 +28,7 @@ type Result struct {
 	Status    string          `json:"status"`
 	Output    json.RawMessage `json:"output"`
 	TimedOut  bool            `json:"timedOut,omitempty"`
+	CreatedAt time.Time       `json:"createdAt,omitempty"`
 }
 
 type Store interface {

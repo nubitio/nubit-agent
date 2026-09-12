@@ -86,6 +86,9 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 	if err := json.Unmarshal(contents, &outbox.pending); err != nil {
 		return nil, fmt.Errorf("%w: parse outbox file: %v", ErrOutboxCorrupt, err)
 	}
+	if outbox.pending == nil {
+		return nil, fmt.Errorf("%w: expected an object, got null", ErrOutboxCorrupt)
+	}
 	if err := outbox.validateLimits(outbox.pending); err != nil {
 		return nil, err
 	}
