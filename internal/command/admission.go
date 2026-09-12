@@ -35,6 +35,7 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 	var siteID string
 	var requested capacity.Resources
 	var siteChange string
+	var siteAdmission capacity.SiteAdmission
 	if command.Type == SiteCreate {
 		request, parseErr := parseSiteCreate(command.Payload)
 		if parseErr != nil {
@@ -68,11 +69,12 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 			finish(success)
 		}, nil
 	}
-	previous, existed := executor.capacity.Reservation(siteID)
-	if err := executor.capacity.ReserveSite(siteID, requested); err != nil {
+	var beginErr error
+	siteAdmission, beginErr = executor.capacity.BeginSite(siteID, requested)
+	if beginErr != nil {
 		finish(false)
 		telemetry.RecordAdmission(ctx, "site", "rejected")
-		return nil, fmt.Errorf("site %s admission: %w", siteID, err)
+		return nil, fmt.Errorf("site %s admission: %w", siteID, beginErr)
 	}
 	telemetry.RecordAdmission(ctx, func() string {
 		if siteChange != "" {
@@ -82,14 +84,11 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 	}(), "accepted")
 	return func(success bool) {
 		if success {
+			executor.capacity.FinishSite(siteAdmission, true)
 			finish(true)
 			return
 		}
-		if existed {
-			_ = executor.capacity.ReserveSite(siteID, previous)
-		} else {
-			executor.capacity.ReleaseSite(siteID)
-		}
+		executor.capacity.FinishSite(siteAdmission, false)
 		finish(false)
 	}, nil
 }

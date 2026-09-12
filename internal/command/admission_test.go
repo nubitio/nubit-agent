@@ -57,4 +57,20 @@ func TestTimedOutOperationRetainsAdmissionUntilProvisionerStops(t *testing.T) {
 	if got := executor.CapacitySnapshot().Operations["backup"].InUse; got != 0 {
 		t.Fatalf("operation admission was not released after completion: %d", got)
 	}
+	if _, err := executor.Execute(Command{ID: "backup-timeout-redelivery", Type: SiteBackupCreate, Version: 1, IdempotencyKey: "backup-timeout", Payload: []byte(`{"siteId":"example.com","retentionDays":7}`)}); err == nil {
+		t.Fatal("a timed-out backup must not be redelivered")
+	}
+}
+
+func TestLateTimeoutCompletionCannotRestoreStaleReservation(t *testing.T) {
+	executor := NewExecutorWithConfig(ExecutorConfig{Capacity: admissionConfig(), TypeTimeouts: map[string]time.Duration{SiteCreate: 10 * time.Millisecond}}, NewMemoryStore(), slowSiteProvisioner{delay: 80 * time.Millisecond})
+	_, _ = executor.Execute(Command{ID: "create-timeout", Type: SiteCreate, Version: 1, IdempotencyKey: "create-timeout", Payload: []byte(`{"domain":"example.com","systemUser":"site-example","phpVersion":"8.4"}`)})
+	_, err := executor.Execute(Command{ID: "resource-update", Type: SiteSetResources, Version: 1, IdempotencyKey: "resource-update", Payload: []byte(`{"siteId":"example.com","resources":{"workers":1,"memoryLimitMb":64}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := executor.CapacitySnapshot().Reserved.PHPWorkers; got != 1 {
+		t.Fatalf("late timeout restored stale reservation: %d", got)
+	}
 }
