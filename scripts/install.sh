@@ -246,7 +246,7 @@ else
   trap "rm -rf '$work'; rm -f '$public_key'" EXIT INT TERM
   cat > "$public_key" <<'KEY'
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=
+MCowBQYDK2VwAyEAQZyV+Zz9anCSjL4FIJzxxIRz2oiaA4pqiFWh3vM6eYw=
 -----END PUBLIC KEY-----
 KEY
   openssl pkeyutl -verify -pubin -inkey "$public_key" -rawin -in "$work/$asset" -sigfile "$work/$asset.sig" >/dev/null 2>&1 \
