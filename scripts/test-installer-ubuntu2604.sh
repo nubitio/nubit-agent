@@ -7,7 +7,7 @@ grep -Fx 'VERSION_ID="26.04"' /etc/os-release
 if NUBIT_AGENT_REPOSITORY=integration/nubit-agent \
   NUBIT_AGENT_TOKEN=conflict-agent-token \
   NUBIT_AGENT_ENROLLMENT_TOKEN=conflict-enrollment-token \
-  sh scripts/install.sh --version v0.0.0-integration \
+   sh scripts/install.sh --version v0.0.0 \
     > /tmp/nubit-agent-installer-conflict.log 2>&1; then
   printf 'installer accepted both agent and enrollment tokens on initial creation\n' >&2
   exit 1
@@ -20,7 +20,7 @@ fi
 test ! -f /etc/nubit-agent/agent.env
 
 NUBIT_AGENT_REPOSITORY=integration/nubit-agent \
-  sh scripts/install.sh --version v0.0.0-integration --profile web \
+   sh scripts/install.sh --version v0.0.0 --profile web \
     --control-url https://control.example.test --agent-token integration-agent-token
 
 test -x /usr/local/bin/nubit-agent
@@ -40,7 +40,7 @@ grep -Fxq 'NUBIT_AGENT_TOKEN=integration-agent-token' /etc/nubit-agent/agent.env
 printf 'CUSTOM_SETTING=keep-me\n' >> /etc/nubit-agent/agent.env
 printf 'NUBIT_AGENT_ENROLLMENT_TOKEN=old-enrollment-token\n' >> /etc/nubit-agent/agent.env
 NUBIT_AGENT_REPOSITORY=integration/nubit-agent NUBIT_AGENT_TOKEN=rotated-agent-token \
-  sh scripts/install.sh --version v0.0.0-integration > /tmp/nubit-agent-installer-rerun.log 2>&1
+   sh scripts/install.sh --version v0.0.0 > /tmp/nubit-agent-installer-rerun.log 2>&1
 grep -Fxq 'NUBIT_CONTROL_URL=https://control.example.test' /etc/nubit-agent/agent.env
 grep -Fxq 'NUBIT_AGENT_TOKEN=rotated-agent-token' /etc/nubit-agent/agent.env
 test "$(grep -Fc 'NUBIT_AGENT_TOKEN=' /etc/nubit-agent/agent.env)" = 1
@@ -57,7 +57,7 @@ if grep -Fq 'rotated-agent-token' /tmp/nubit-agent-installer-rerun.log; then
   exit 1
 fi
 NUBIT_AGENT_REPOSITORY=integration/nubit-agent \
-  sh scripts/install.sh --version v0.0.0-integration \
+   sh scripts/install.sh --version v0.0.0 \
     --agent-token cli-rotated-agent-token > /tmp/nubit-agent-installer-cli-rerun.log 2>&1
 grep -Fxq 'NUBIT_AGENT_TOKEN=cli-rotated-agent-token' /etc/nubit-agent/agent.env
 test "$(grep -Fc 'NUBIT_AGENT_TOKEN=' /etc/nubit-agent/agent.env)" = 1
@@ -73,7 +73,7 @@ if grep -q '^NUBIT_AGENT_ENROLLMENT_TOKEN=' /etc/nubit-agent/agent.env; then
 fi
 printf 'NUBIT_AGENT_ENROLLMENT_TOKEN=stale-enrollment-token\n' >> /etc/nubit-agent/agent.env
 NUBIT_AGENT_REPOSITORY=integration/nubit-agent \
-  sh scripts/install.sh --version v0.0.0-integration > /tmp/nubit-agent-installer-no-token-rerun.log 2>&1
+   sh scripts/install.sh --version v0.0.0 > /tmp/nubit-agent-installer-no-token-rerun.log 2>&1
 grep -Fxq 'NUBIT_AGENT_TOKEN=cli-rotated-agent-token' /etc/nubit-agent/agent.env
 if grep -Fq 'stale-enrollment-token' /etc/nubit-agent/agent.env /tmp/nubit-agent-installer-no-token-rerun.log; then
   printf 'no-token rerun leaked or preserved enrollment token\n' >&2

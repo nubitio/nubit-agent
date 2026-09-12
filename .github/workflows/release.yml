@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and publish'
+         description: 'Exact immutable stable tag (vMAJOR.MINOR.PATCH) to build and publish once'
         required: true
 
 concurrency:
@@ -56,7 +56,14 @@ jobs:
 
       - name: Resolve the release tag
         id: release
-        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -eu
+          tag='${{ github.event.inputs.tag || github.ref_name }}'
+          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "release tag must be vMAJOR.MINOR.PATCH: $tag" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Build linux/amd64 and linux/arm64
         env:
@@ -85,11 +92,11 @@ jobs:
           set -eu
           [ -n "$RELEASE_SIGNING_PRIVATE_KEY" ] || { echo 'NUBIT_RELEASE_SIGNING_PRIVATE_KEY is required' >&2; exit 1; }
           umask 077
+          trap 'rm -f signing-key.pem' EXIT INT TERM
           printf '%s\n' "$RELEASE_SIGNING_PRIVATE_KEY" > signing-key.pem
           for asset in dist/nubit-agent_linux_*; do
             openssl pkeyutl -sign -inkey signing-key.pem -rawin -in "$asset" -out "$asset.sig"
           done
-          rm -f signing-key.pem
 
       # Confirms the shipped binary reports the tag it was built from, so a
       # self-updating agent compares versions against something real.

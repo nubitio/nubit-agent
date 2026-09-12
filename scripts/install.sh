@@ -214,6 +214,8 @@ if [ ! -f "$env_file" ] && [ -n "$agent_token" ] && [ -n "$enrollment_token" ]; 
 fi
 
 [ -n "$version" ] || fail 'An exact release tag is required; mutable latest releases are not supported.'
+printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  || fail 'Release tag must be an exact stable tag in the form vMAJOR.MINOR.PATCH.'
 tag=$version
 
 base="https://github.com/${repository}/releases/download/${tag}"

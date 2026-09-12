@@ -199,11 +199,32 @@ func (updater *Updater) latestVersion(ctx context.Context) (string, error) {
 	}
 	best := ""
 	for _, release := range releases {
-		if !release.Draft && !release.Prerelease && (best == "" || newer(best, release.TagName)) {
+		if !release.Draft && !release.Prerelease && validReleaseTag(release.TagName) && (best == "" || newer(best, release.TagName)) {
 			best = release.TagName
 		}
 	}
 	return best, nil
+}
+
+func validReleaseTag(tag string) bool {
+	parts := strings.Split(tag, ".")
+	if len(parts) != 3 || !strings.HasPrefix(parts[0], "v") {
+		return false
+	}
+	for index, part := range parts {
+		if index == 0 {
+			part = strings.TrimPrefix(part, "v")
+		}
+		if part == "" {
+			return false
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (updater *Updater) signature(ctx context.Context, tag, asset string) ([]byte, error) {
@@ -320,7 +341,7 @@ func (updater *Updater) get(ctx context.Context, endpoint string) (io.ReadCloser
 // A non-release current version ("dev") never updates: there is no ordering
 // between an untagged build and a release, so replacing it would be a guess.
 func newer(current, candidate string) bool {
-	if candidate == "" || current == "" || current == "dev" {
+	if !validReleaseTag(candidate) || !validReleaseTag(current) {
 		return false
 	}
 	currentParts, ok := semver(current)

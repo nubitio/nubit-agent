@@ -121,6 +121,9 @@ pre-release tags are ignored.
 Checksums establish integrity; the detached Ed25519 signature establishes
 release authenticity independently of `SHA256SUMS`. A missing or invalid
 signature rejects the update and leaves the running binary untouched.
+Release tags accepted by the installer, updater, and release workflow are only
+stable `vMAJOR.MINOR.PATCH` tags; `latest`, prereleases, and arbitrary tag names
+are rejected.
 
 ## Local development
 

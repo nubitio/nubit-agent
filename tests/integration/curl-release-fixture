@@ -6,7 +6,17 @@ set -eu
 # PPA traffic to the real curl installed in the Ubuntu image.
 arguments=$*
 case "$arguments" in
-  *github.com/integration/nubit-agent/releases/download/v0.0.0-integration/nubit-agent_linux_amd64*|*github.com/integration/nubit-agent/releases/download/v0.0.0-integration/nubit-agent_linux_arm64*)
+  *github.com/integration/nubit-agent/releases/download/v0.0.0/nubit-agent_linux_amd64.sig*)
+    output=
+    while [ "$#" -gt 0 ]; do case "$1" in -o) shift; output=$1 ;; esac; shift; done
+    cp /fixture/nubit-agent_linux_amd64.sig "$output"
+    ;;
+  *github.com/integration/nubit-agent/releases/download/v0.0.0/nubit-agent_linux_arm64.sig*)
+    output=
+    while [ "$#" -gt 0 ]; do case "$1" in -o) shift; output=$1 ;; esac; shift; done
+    cp /fixture/nubit-agent_linux_arm64.sig "$output"
+    ;;
+  *github.com/integration/nubit-agent/releases/download/v0.0.0/nubit-agent_linux_amd64*|*github.com/integration/nubit-agent/releases/download/v0.0.0/nubit-agent_linux_arm64*)
     output=
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -20,7 +30,7 @@ case "$arguments" in
       *) cp /fixture/nubit-agent_linux_arm64 "$output" ;;
     esac
     ;;
-  *github.com/integration/nubit-agent/releases/download/v0.0.0-integration/SHA256SUMS*)
+  *github.com/integration/nubit-agent/releases/download/v0.0.0/SHA256SUMS*)
     output=
     while [ "$#" -gt 0 ]; do
       case "$1" in

@@ -88,6 +88,15 @@ jobs:
       - name: Dry run
         run: sudo sh scripts/install.sh --dry-run --version v0.0.0-ci --control-url https://control.example.test --agent-token ci-agent-token
 
+      - name: Rejects mutable and invalid release tags
+        run: |
+          for tag in latest v1.2 v1.2.3-rc1 not-a-release; do
+            if sudo sh scripts/install.sh --dry-run --version "$tag"; then
+              echo "accepted invalid release tag: $tag" >&2
+              exit 1
+            fi
+          done
+
       # Exercise each supported distro in a disposable container. --dry-run
       # never changes the host, but covers the OS guard and package plan.
       - name: Dry run of the web profile on Debian 12

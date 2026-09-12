@@ -1,18 +1,43 @@
 package selfupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestReleaseSigningKeysAreConsistent(t *testing.T) {
+	embedded, _ := pem.Decode(releaseSigningPublicKeyPEM)
+	if embedded == nil {
+		t.Fatal("embedded signing key is not PEM")
+	}
+	packaged, err := os.ReadFile(filepath.Join("..", "..", "packaging", "release-signing-public-key.pem"))
+	if err != nil {
+		t.Fatalf("read packaged signing key: %v", err)
+	}
+	packagedBlock, _ := pem.Decode(packaged)
+	if packagedBlock == nil || !bytes.Equal(embedded.Bytes, packagedBlock.Bytes) {
+		t.Fatal("embedded and packaged signing keys differ")
+	}
+	installer, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install.sh"))
+	if err != nil {
+		t.Fatalf("read installer: %v", err)
+	}
+	if !strings.Contains(string(installer), "MCowBQYDK2VwAyEAHgFbQQhtG/KkWAMeKEz0opipXnhjOwKt0iaBm7Gj8UI=") {
+		t.Fatal("installer signing key differs from the embedded key")
+	}
+}
 
 func TestNewerOnlyMovesForward(t *testing.T) {
 	cases := []struct {
@@ -32,7 +57,7 @@ func TestNewerOnlyMovesForward(t *testing.T) {
 		{"v1.0.0", "", false},
 		{"v1.0.0", "not-a-version", false},
 		{"v1.0.0-rc1", "v1.0.0", false},
-		{"v1.0.0", "v1.0.1-rc1", true},
+		{"v1.0.0", "v1.0.1-rc1", false},
 	}
 	for _, testCase := range cases {
 		if got := newer(testCase.current, testCase.candidate); got != testCase.want {
