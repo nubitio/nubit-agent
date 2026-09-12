@@ -9,6 +9,14 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
+)
+
+const (
+	DefaultOutboxLimit = 10000
+	DefaultOutboxBytes = 64 << 20
 )
 
 // Flush reports every pending result to Nubit Control and removes the ones
@@ -37,14 +45,8 @@ func Flush(ctx context.Context, client *Client, outbox Outbox) (int, error) {
 	return drained, nil
 }
 
-// Outbox put/delete failures are classified so the poller can decide whether a
-// single bad write should abort the whole batch or be treated as recoverable.
-//
-// The current FileOutbox never returns ErrOutboxFull (it accepts unbounded
-// entries; bounded eviction is tracked separately), but the sentinel exists
-// for forward compatibility with the bounded outbox plan.
 var (
-	ErrOutboxFull    = errors.New("outbox full, oldest evicted")
+	ErrOutboxFull    = errors.New("outbox full; pending results were preserved")
 	ErrOutboxCorrupt = errors.New("outbox storage corrupt")
 	ErrOutboxIO      = errors.New("outbox io error")
 )
@@ -55,6 +57,7 @@ type PendingResult struct {
 	Status     string          `json:"status"`
 	Output     json.RawMessage `json:"output,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt,omitempty"`
 }
 
 type Outbox interface {
@@ -64,13 +67,15 @@ type Outbox interface {
 }
 
 type FileOutbox struct {
-	mu      sync.RWMutex
-	path    string
-	pending map[string]PendingResult
+	mu         sync.RWMutex
+	path       string
+	pending    map[string]PendingResult
+	maxEntries int
+	maxBytes   int64
 }
 
 func NewFileOutbox(path string) (*FileOutbox, error) {
-	outbox := &FileOutbox{path: path, pending: make(map[string]PendingResult)}
+	outbox := &FileOutbox{path: path, pending: make(map[string]PendingResult), maxEntries: DefaultOutboxLimit, maxBytes: DefaultOutboxBytes}
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return outbox, nil
@@ -81,23 +86,59 @@ func NewFileOutbox(path string) (*FileOutbox, error) {
 	if err := json.Unmarshal(contents, &outbox.pending); err != nil {
 		return nil, fmt.Errorf("%w: parse outbox file: %v", ErrOutboxCorrupt, err)
 	}
+	if outbox.pending == nil {
+		return nil, fmt.Errorf("%w: expected an object, got null", ErrOutboxCorrupt)
+	}
+	if err := outbox.validateLimits(outbox.pending); err != nil {
+		return nil, err
+	}
+	return outbox, nil
+}
+
+func NewFileOutboxWithLimits(path string, maxEntries int, maxBytes int64) (*FileOutbox, error) {
+	outbox, err := NewFileOutbox(path)
+	if err != nil {
+		return nil, err
+	}
+	if maxEntries > 0 {
+		outbox.maxEntries = maxEntries
+	}
+	if maxBytes > 0 {
+		outbox.maxBytes = maxBytes
+	}
+	if err := outbox.validateLimits(outbox.pending); err != nil {
+		return nil, err
+	}
 	return outbox, nil
 }
 
 func (outbox *FileOutbox) Put(result PendingResult) error {
 	outbox.mu.Lock()
 	defer outbox.mu.Unlock()
-	previous, existed := outbox.pending[result.CommandID]
+	previous := clonePending(outbox.pending)
+	if result.CreatedAt.IsZero() {
+		result.CreatedAt = time.Now().UTC()
+	}
 	outbox.pending[result.CommandID] = result
+	if err := outbox.validateLimits(outbox.pending); err != nil {
+		outbox.pending = previous
+		return err
+	}
 	if err := outbox.persist(); err != nil {
-		if existed {
-			outbox.pending[result.CommandID] = previous
-		} else {
-			delete(outbox.pending, result.CommandID)
+		if !durable.IsCommitted(err) {
+			outbox.pending = previous
 		}
 		return err
 	}
 	return nil
+}
+
+func clonePending(pending map[string]PendingResult) map[string]PendingResult {
+	clone := make(map[string]PendingResult, len(pending))
+	for key, result := range pending {
+		clone[key] = result
+	}
+	return clone
 }
 
 func (outbox *FileOutbox) List() []PendingResult {
@@ -118,9 +159,16 @@ func (outbox *FileOutbox) List() []PendingResult {
 func (outbox *FileOutbox) Reset() error {
 	outbox.mu.Lock()
 	defer outbox.mu.Unlock()
+	previous := outbox.pending
 	outbox.pending = map[string]PendingResult{}
 
-	return outbox.persist()
+	if err := outbox.persist(); err != nil {
+		if !durable.IsCommitted(err) {
+			outbox.pending = previous
+		}
+		return err
+	}
+	return nil
 }
 
 func (outbox *FileOutbox) Delete(commandID string) error {
@@ -132,7 +180,9 @@ func (outbox *FileOutbox) Delete(commandID string) error {
 	}
 	delete(outbox.pending, commandID)
 	if err := outbox.persist(); err != nil {
-		outbox.pending[commandID] = previous
+		if !durable.IsCommitted(err) {
+			outbox.pending[commandID] = previous
+		}
 		return err
 	}
 	return nil
@@ -146,23 +196,22 @@ func (outbox *FileOutbox) persist() error {
 	if err != nil {
 		return fmt.Errorf("%w: encode outbox: %v", ErrOutboxCorrupt, err)
 	}
-	temporary := outbox.path + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+	if err := durable.AtomicWrite(outbox.path, contents, 0o600); err != nil {
 		return fmt.Errorf("%w: write outbox: %v", ErrOutboxIO, err)
 	}
-	if err := os.Rename(temporary, outbox.path); err != nil {
-		return fmt.Errorf("%w: rename outbox: %v", ErrOutboxIO, err)
+	return nil
+}
+
+func (outbox *FileOutbox) validateLimits(pending map[string]PendingResult) error {
+	if len(pending) > outbox.maxEntries {
+		return fmt.Errorf("%w: %d entries exceeds limit %d", ErrOutboxFull, len(pending), outbox.maxEntries)
 	}
-	directory, err := os.Open(filepath.Dir(outbox.path))
+	contents, err := json.Marshal(pending)
 	if err != nil {
-		return fmt.Errorf("%w: open outbox directory: %v", ErrOutboxIO, err)
+		return fmt.Errorf("%w: encode pending results: %v", ErrOutboxCorrupt, err)
 	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		return fmt.Errorf("%w: sync outbox directory: %v", ErrOutboxIO, err)
-	}
-	if err := directory.Close(); err != nil {
-		return fmt.Errorf("%w: close outbox directory: %v", ErrOutboxIO, err)
+	if int64(len(contents)) > outbox.maxBytes {
+		return fmt.Errorf("%w: serialized pending results are %d bytes, limit is %d", ErrOutboxFull, len(contents), outbox.maxBytes)
 	}
 	return nil
 }

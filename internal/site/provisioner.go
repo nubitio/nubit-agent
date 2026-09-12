@@ -430,18 +430,30 @@ func (p Provisioner) Reset() (ResetResult, error) {
 func (p Provisioner) forceRemove(state State) error {
 	layout := p.layoutFor(state.PHPVersion)
 	siteRoot := filepath.Dir(state.DocumentRoot)
+	var hostErrors []error
 	for _, path := range []string{
 		filepath.Join(layout.CaddyConfigDir, state.Domain+".caddy"),
 		filepath.Join(layout.CaddyDisabledDir, state.Domain+".caddy"),
 		filepath.Join(layout.PHPConfigDir, state.SystemUser+".conf"),
 	} {
-		_ = os.Remove(path)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			hostErrors = append(hostErrors, fmt.Errorf("remove %s: %w", path, err))
+		}
 	}
 	if p.Runner != nil {
-		_ = p.Runner.Run("systemctl", "reload", "php"+state.PHPVersion+"-fpm")
-		_ = p.Runner.Run("userdel", "--remove", state.SystemUser)
+		if err := p.Runner.Run("systemctl", "reload", "php"+state.PHPVersion+"-fpm"); err != nil {
+			hostErrors = append(hostErrors, fmt.Errorf("reload php-fpm: %w", err))
+		}
+		if err := p.Runner.Run("userdel", "--remove", state.SystemUser); err != nil {
+			hostErrors = append(hostErrors, fmt.Errorf("remove system user: %w", err))
+		}
 	}
-	_ = os.RemoveAll(siteRoot)
+	if err := os.RemoveAll(siteRoot); err != nil {
+		hostErrors = append(hostErrors, fmt.Errorf("remove site root: %w", err))
+	}
+	if len(hostErrors) > 0 {
+		return errors.Join(hostErrors...)
+	}
 
 	return p.Store.Delete(state.SiteID)
 }

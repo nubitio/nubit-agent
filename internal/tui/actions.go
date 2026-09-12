@@ -10,6 +10,7 @@ import (
 
 	"github.com/nubitio/nubit-agent/internal/command"
 	"github.com/nubitio/nubit-agent/internal/controlplane"
+	"github.com/nubitio/nubit-agent/internal/durable"
 	"github.com/nubitio/nubit-agent/internal/site"
 )
 
@@ -56,6 +57,11 @@ func runNodeReset(stateDir string, daemonRunning bool) (site.ResetResult, error)
 	if daemonRunning {
 		return site.ResetResult{}, errDaemonRunning
 	}
+	lock, err := durable.Acquire(filepath.Join(stateDir, "writer.lock"))
+	if err != nil {
+		return site.ResetResult{}, err
+	}
+	defer lock.Close()
 	p, err := newProvisioner(stateDir)
 	if err != nil {
 		return site.ResetResult{}, err
@@ -64,11 +70,22 @@ func runNodeReset(stateDir string, daemonRunning bool) (site.ResetResult, error)
 	if err != nil {
 		return res, err
 	}
-	if cs, csErr := command.NewFileStore(filepath.Join(stateDir, "commands.json")); csErr == nil {
-		_ = cs.Reset()
+	if len(res.Errors) > 0 {
+		return res, fmt.Errorf("node reset had host/state failures: %s", strings.Join(res.Errors, "; "))
 	}
-	if ob, obErr := controlplane.NewFileOutbox(filepath.Join(stateDir, outboxFile)); obErr == nil {
-		_ = ob.Reset()
+	cs, err := command.NewFileStore(filepath.Join(stateDir, "commands.json"))
+	if err != nil {
+		return res, fmt.Errorf("load command results for reset: %w", err)
+	}
+	if err := cs.Reset(); err != nil {
+		return res, fmt.Errorf("reset command results: %w", err)
+	}
+	ob, err := controlplane.NewFileOutbox(filepath.Join(stateDir, outboxFile))
+	if err != nil {
+		return res, fmt.Errorf("load outbox for reset: %w", err)
+	}
+	if err := ob.Reset(); err != nil {
+		return res, fmt.Errorf("reset outbox: %w", err)
 	}
 	return res, nil
 }
@@ -80,6 +97,11 @@ func flushOutboxNow(ctx context.Context, stateDir, controlURL string, daemonRunn
 	if daemonRunning {
 		return 0, errDaemonRunning
 	}
+	lock, err := durable.Acquire(filepath.Join(stateDir, "writer.lock"))
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
 	token := os.Getenv("NUBIT_AGENT_TOKEN")
 	if controlURL == "" || token == "" {
 		return 0, errors.New("outbox flush needs NUBIT_CONTROL_URL and NUBIT_AGENT_TOKEN in the environment")

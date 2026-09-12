@@ -174,11 +174,10 @@ func executeAndReport(ctx context.Context, client *Client, executor Executor, ou
 	if err := outbox.Put(pending); err != nil {
 		switch {
 		case errors.Is(err, ErrOutboxFull):
-			// Eviction kept the outbox healthy, but this command's report is
-			// gone. The next poll will regenerate the report because the
-			// executor is idempotent on the command's idempotency key.
-			log.Printf("nubit-agent: outbox full, dropped result for command %s; will be regenerated on next poll: %v", cmd.ID, err)
-			return true
+			// Never acknowledge a command whose result could not be persisted.
+			// Stop the batch so the capacity failure is observable to the poller.
+			log.Printf("nubit-agent: outbox full, result for command %s was not persisted: %v", cmd.ID, err)
+			return false
 		case errors.Is(err, ErrOutboxCorrupt), errors.Is(err, ErrOutboxIO):
 			log.Printf("nubit-agent: persist result for command %s failed: %v", cmd.ID, err)
 			return false

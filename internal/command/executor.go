@@ -28,6 +28,8 @@ type Result struct {
 	Status    string          `json:"status"`
 	Output    json.RawMessage `json:"output"`
 	TimedOut  bool            `json:"timedOut,omitempty"`
+	CreatedAt time.Time       `json:"createdAt,omitempty"`
+	Tombstone bool            `json:"tombstone,omitempty"`
 }
 
 type Store interface {
@@ -94,13 +96,6 @@ type Executor struct {
 	tlsIssuePoll time.Duration
 }
 
-// SetAuditLogger installs the audit log used to record every command the
-// executor runs. A nil logger disables auditing. The executor takes a copy
-// of the pointer; the caller may keep using the same Logger afterwards.
-func (executor *Executor) SetAuditLogger(logger *audit.Logger) {
-	executor.audit = logger
-}
-
 // RestoreCapacity reconstructs reservations after a daemon restart from the
 // durable site inventory. It is intentionally explicit; no speculative
 // command concurrency or implicit state migration is performed.
@@ -122,6 +117,13 @@ func (executor *Executor) CapacitySnapshot() capacity.Snapshot {
 		return capacity.Snapshot{}
 	}
 	return executor.capacity.Snapshot()
+}
+
+// SetAuditLogger installs the audit log used to record every command the
+// executor runs. A nil logger disables auditing. The executor takes a copy
+// of the pointer; the caller may keep using the same Logger afterwards.
+func (executor *Executor) SetAuditLogger(logger *audit.Logger) {
+	executor.audit = logger
 }
 
 type SiteProvisioner interface {
@@ -330,6 +332,7 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 
 	payloadSHA := audit.HashPayload(command.Payload)
 	started := time.Now()
+
 	finishAdmission, err := executor.admit(parent, command)
 	if err != nil {
 		return Result{}, err
@@ -353,7 +356,6 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	}
 	if cacheResult {
 		if saveErr := executor.store.Save(command.IdempotencyKey, result); saveErr != nil {
-			err = saveErr
 			executor.recordAudit(command, payloadSHA, started, "failed")
 			return Result{}, saveErr
 		}
@@ -415,8 +417,6 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 
 	select {
 	case <-ctx.Done():
-		// Process shutdown is not a command timeout. Do not leave a terminal
-		// tombstone behind: the command must be retried after restart.
 		if parent.Err() != nil {
 			if completed != nil {
 				go func() { outcome := <-done; completed(outcome.err) }()
@@ -441,14 +441,17 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 			Output:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, message)),
 			TimedOut:  true,
 		}
-		executor.timedOutMu.Lock()
-		executor.timedOut[command.IdempotencyKey] = failed
-		executor.timedOutMu.Unlock()
 		// Persist the terminal timeout so a redelivery cannot start a second
 		// copy while the original legacy provisioner is still unwinding.
 		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
+			executor.timedOutMu.Lock()
+			executor.timedOut[command.IdempotencyKey] = failed
+			executor.timedOutMu.Unlock()
 			return Result{}, saveErr, false
 		}
+		executor.timedOutMu.Lock()
+		executor.timedOut[command.IdempotencyKey] = failed
+		executor.timedOutMu.Unlock()
 		return Result{}, errors.New(message), false
 	case outcome := <-done:
 		return outcome.result, outcome.err, true
@@ -960,12 +963,11 @@ func (executor *Executor) runCommand(command Command) (Result, error) {
 	}, nil
 }
 
-// resultIsNotCached lists command types whose result must not be replayed from
-// the idempotency store: read-only queries that should observe current state.
+// resultIsNotCached lists read-only queries that should observe current state.
 func resultIsNotCached(commandType string) bool {
 	switch commandType {
 	case SiteFilesList, SiteFilesRead, SiteUsage, SiteLogsRead,
-		SiteCronList, SiteBackupList, SiteAppAdminPassword:
+		SiteCronList, SiteBackupList, SiteBackupVerify:
 		return true
 	default:
 		return false

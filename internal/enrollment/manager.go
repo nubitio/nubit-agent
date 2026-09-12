@@ -17,8 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
 )
 
 // Manager is the on-disk orchestrator for the agent's mTLS identity. It
@@ -43,6 +44,9 @@ type Manager struct {
 	// the manager builds a Client with a sensible default. Tests inject
 	// their own transport; production code does not.
 	HTTPClient *http.Client
+	// WriterLock is supplied by the daemon, which already owns the process-wide
+	// lock. Standalone enrollment acquires the same lock itself.
+	WriterLock *durable.WriterLock
 }
 
 const (
@@ -52,14 +56,14 @@ const (
 	manifestFile    = "material-manifest.json"
 )
 
-var materialWriter sync.Mutex
-
 type materialManifest struct {
 	Generation  string `json:"generation"`
 	Key         string `json:"key"`
 	Certificate string `json:"certificate"`
 	CA          string `json:"ca"`
 }
+
+var materialWriter sync.Mutex
 
 // ErrNotEnrolled is returned by operations that require an existing
 // certificate when none has been written yet.
@@ -78,6 +82,13 @@ var ErrAlreadyEnrolled = errors.New("agent is already enrolled")
 func (manager Manager) Enroll(ctx context.Context, token string) error {
 	materialWriter.Lock()
 	defer materialWriter.Unlock()
+	lock, err := manager.acquireWriterLock()
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
 	if token == "" {
 		return errors.New("enrollment token is required")
 	}
@@ -89,11 +100,6 @@ func (manager Manager) Enroll(ctx context.Context, token string) error {
 	if controlURL.Scheme != "https" && !(controlURL.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
 		return errors.New("enrollment requires HTTPS except on loopback")
 	}
-	unlock, err := manager.lockMaterial()
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	if manager.alreadyEnrolled(time.Now().UTC()) {
 		return ErrAlreadyEnrolled
 	}
@@ -151,11 +157,13 @@ func (manager Manager) alreadyEnrolled(now time.Time) bool {
 func (manager Manager) Renew(ctx context.Context) error {
 	materialWriter.Lock()
 	defer materialWriter.Unlock()
-	unlock, err := manager.lockMaterial()
+	lock, err := manager.acquireWriterLock()
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	if lock != nil {
+		defer lock.Close()
+	}
 	if !manager.Enrolled() {
 		return ErrNotEnrolled
 	}
@@ -196,22 +204,14 @@ func (manager Manager) Renew(ctx context.Context) error {
 	return nil
 }
 
-func (manager Manager) lockMaterial() (func(), error) {
-	if err := os.MkdirAll(manager.Directory, 0o750); err != nil {
-		return nil, err
+func (manager Manager) acquireWriterLock() (*durable.WriterLock, error) {
+	if manager.WriterLock != nil {
+		return nil, nil
 	}
-	file, err := os.OpenFile(filepath.Join(manager.Directory, ".material.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
+	if manager.StateDirectory == "" {
+		return nil, errors.New("state directory is required for writer lock")
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return func() {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-	}, nil
+	return durable.Acquire(filepath.Join(manager.StateDirectory, "writer.lock"))
 }
 
 func (manager Manager) newClient(token string) (*Client, error) {
@@ -318,18 +318,10 @@ func (manager Manager) persistMaterial(keyPEM []byte, response *EnrollResponse) 
 	return manager.persistGeneration(keyPEM, response)
 }
 
-func (manager Manager) persistCertificate(response *EnrollResponse) error {
-	key, err := os.ReadFile(manager.materialPath(keyFile))
-	if err != nil {
-		return err
-	}
-	return manager.persistGeneration(key, response)
-}
-
 func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse) error {
 	generation := fmt.Sprintf("generation-%d", time.Now().UnixNano())
-	directory := filepath.Join(manager.Directory, generation)
-	if err := os.Mkdir(directory, 0o700); err != nil {
+	generationDir := filepath.Join(manager.Directory, generation)
+	if err := os.Mkdir(generationDir, 0o700); err != nil {
 		return err
 	}
 	files := []struct {
@@ -342,16 +334,11 @@ func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse
 		{caChainFile, []byte(caBundleFor(response)), 0o644},
 	}
 	for _, file := range files {
-		if err := writeAtomic(filepath.Join(directory, file.name), file.data, file.mode); err != nil {
+		if err := writeAtomic(filepath.Join(generationDir, file.name), file.data, file.mode); err != nil {
 			return err
 		}
 	}
-	manifest := materialManifest{
-		Generation:  generation,
-		Key:         filepath.Join(generation, keyFile),
-		Certificate: filepath.Join(generation, certificateFile),
-		CA:          filepath.Join(generation, caChainFile),
-	}
+	manifest := materialManifest{Generation: generation, Key: filepath.Join(generation, keyFile), Certificate: filepath.Join(generation, certificateFile), CA: filepath.Join(generation, caChainFile)}
 	contents, err := json.Marshal(manifest)
 	if err != nil {
 		return err
@@ -359,15 +346,22 @@ func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse
 	if err := writeAtomic(filepath.Join(manager.Directory, manifestFile), contents, 0o600); err != nil {
 		return err
 	}
-	// Keep the historical paths available to older tooling and tests. Readers
-	// in this package use the manifest, so these compatibility mirrors cannot
-	// expose a mixed generation after a restart.
+	// Preserve the legacy paths for older tooling; readers use the committed
+	// manifest and therefore never depend on these compatibility mirrors.
 	for _, file := range files {
 		if err := writeAtomic(filepath.Join(manager.Directory, file.name), file.data, file.mode); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (manager Manager) persistCertificate(response *EnrollResponse) error {
+	key, err := os.ReadFile(manager.materialPath(keyFile))
+	if err != nil {
+		return err
+	}
+	return manager.persistGeneration(key, response)
 }
 
 func caBundleFor(response *EnrollResponse) string {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
 )
 
 type State struct {
@@ -109,6 +111,9 @@ func NewFileStateStore(path string) (*FileStateStore, error) {
 	if err := json.Unmarshal(contents, &store.states); err != nil {
 		return nil, err
 	}
+	if store.states == nil {
+		return nil, durable.Invalid(path, errors.New("expected an object, got null"))
+	}
 	return store, nil
 }
 
@@ -125,10 +130,12 @@ func (store *FileStateStore) Save(state State) error {
 	previous, existed := store.states[state.SiteID]
 	store.states[state.SiteID] = state
 	if err := store.persist(); err != nil {
-		if existed {
-			store.states[state.SiteID] = previous
-		} else {
-			delete(store.states, state.SiteID)
+		if !durable.IsCommitted(err) {
+			if existed {
+				store.states[state.SiteID] = previous
+			} else {
+				delete(store.states, state.SiteID)
+			}
 		}
 		return err
 	}
@@ -154,7 +161,9 @@ func (store *FileStateStore) Delete(siteID string) error {
 	}
 	delete(store.states, siteID)
 	if err := store.persist(); err != nil {
-		store.states[siteID] = previous
+		if !durable.IsCommitted(err) {
+			store.states[siteID] = previous
+		}
 		return err
 	}
 	return nil
@@ -168,9 +177,5 @@ func (store *FileStateStore) persist() error {
 	if err != nil {
 		return err
 	}
-	temporary := store.path + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, store.path)
+	return durable.AtomicWrite(store.path, contents, 0o600)
 }

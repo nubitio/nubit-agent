@@ -213,3 +213,34 @@ func TestLoggerHonoursContextCancellation(t *testing.T) {
 		}
 	}
 }
+
+func TestLoggerRotatesAtConfiguredLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.log")
+	logger, err := NewWithLimits(path, 256, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := logger.Record(context.Background(), Event{CommandID: string(rune('a' + i)), CommandType: "system.ping", Result: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(path + ".3"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected only two rotated files, stat error=%v", err)
+	}
+	if _, err := os.Stat(path + ".2"); err != nil {
+		t.Fatalf("expected second rotation: %v", err)
+	}
+}
+
+func TestLoggerRejectsIndividualOversizedEvent(t *testing.T) {
+	logger, err := NewWithLimits(filepath.Join(t.TempDir(), "audit.log"), 32, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = logger.Record(context.Background(), Event{CommandType: string(make([]byte, 128))})
+	if !errors.Is(err, ErrEventTooLarge) {
+		t.Fatalf("expected ErrEventTooLarge, got %v", err)
+	}
+}

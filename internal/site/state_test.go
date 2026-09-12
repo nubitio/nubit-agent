@@ -1,10 +1,21 @@
 package site
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestFileStateStoreRejectsNullState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sites.json")
+	if err := os.WriteFile(path, []byte("null"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileStateStore(path); err == nil {
+		t.Fatal("expected null state to be rejected")
+	}
+}
 
 func TestFileStateStorePersistsSitesAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sites.json")
