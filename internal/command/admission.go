@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/nubitio/nubit-agent/internal/capacity"
@@ -19,7 +20,7 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 		telemetry.RecordAdmission(ctx, kind, "rejected")
 		return nil, fmt.Errorf("%s operation admission: %w", kind, err)
 	}
-	if (kind == "backup" || kind == "archive") && !executor.capacity.ScratchAvailable("/") {
+	if (kind == "backup" || kind == "restore" || kind == "archive") && !executor.capacity.ScratchAvailable("/") {
 		release()
 		telemetry.RecordAdmission(ctx, kind, "rejected")
 		return nil, fmt.Errorf("%s operation admission: insufficient scratch free space", kind)
@@ -59,12 +60,31 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 		siteID, siteChange = request.SiteID, "delete"
 	}
 	if siteChange == "" {
+		if siteID, ok := siteMutationID(command); ok && siteID != "" {
+			admission, beginErr := executor.capacity.BeginCommand(siteID)
+			if beginErr != nil {
+				finish(false)
+				return nil, fmt.Errorf("site %s admission: %w", siteID, beginErr)
+			}
+			return func(success bool) {
+				executor.capacity.FinishCommand(admission)
+				finish(success)
+			}, nil
+		}
 		return finish, nil
 	}
 	if siteChange == "delete" {
+		var admission capacity.SiteAdmission
+		admission, err = executor.capacity.BeginCommand(siteID)
+		if err != nil {
+			finish(false)
+			return nil, fmt.Errorf("site %s admission: %w", siteID, err)
+		}
 		return func(success bool) {
 			if success {
 				executor.capacity.ReleaseSite(siteID)
+			} else {
+				executor.capacity.FinishCommand(admission)
 			}
 			finish(success)
 		}, nil
@@ -91,6 +111,27 @@ func (executor *Executor) admit(ctx context.Context, command Command) (func(bool
 		executor.capacity.FinishSite(siteAdmission, false)
 		finish(false)
 	}, nil
+}
+
+func siteMutationID(command Command) (string, bool) {
+	switch command.Type {
+	case SiteCreate:
+		var request SiteCreatePayload
+		if json.Unmarshal(command.Payload, &request) == nil {
+			return request.Domain, true
+		}
+	case SiteSetResources, RuntimeSetVersion, SiteSuspend, SiteResume, SiteAddDomain, SiteRemoveDomain,
+		SiteAppInstall, SiteAppUpdate, SiteAppAdminPassword, SFTPCreate, SFTPUpdateKey, SFTPRevoke,
+		SFTPUserCreate, SFTPUserUpdateKey, SFTPUserDelete, DatabaseCreate, DatabaseRotatePassword,
+		DatabaseDelete, DatabaseUserCreate, DatabaseUserDelete, DatabaseGrant, DatabaseRevoke,
+		SiteFilesMkdir, SiteFilesWrite, SiteFilesDelete, SiteFilesUnzip, SiteFilesRename,
+		SiteCronReplace, SiteBackupCreate, SiteBackupRestore:
+		var request struct{ SiteID string `json:"siteId"` }
+		if json.Unmarshal(command.Payload, &request) == nil {
+			return request.SiteID, true
+		}
+	}
+	return "", false
 }
 
 func siteResources(r site.Resources) capacity.Resources {
