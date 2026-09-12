@@ -150,7 +150,7 @@ func main() {
 		reservations = append(reservations, capacity.Reservation{Name: state.SiteID, Resources: capacity.Resources{CPUmilli: int64(state.Resources.WithDefaults().Workers) * 50, MemoryBytes: int64(state.Resources.WithDefaults().Workers) * int64(state.Resources.WithDefaults().MemoryLimitMB) * 1024 * 1024, PHPWorkers: int64(state.Resources.WithDefaults().Workers), PIDs: int64(state.Resources.WithDefaults().Workers) + 8}})
 	}
 	if err := executor.RestoreCapacity(reservations); err != nil {
-		log.Fatalf("restore capacity reservations: %v", err)
+		log.Printf("nubit-agent: capacity reservation restore warning: %v", err)
 	}
 	reporter.SetCapacity(executor.CapacitySnapshot)
 	auditLogger, err := audit.New(filepath.Join(stateDir, "audit.log"))

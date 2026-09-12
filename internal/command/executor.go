@@ -106,8 +106,9 @@ func (executor *Executor) RestoreCapacity(reservations []capacity.Reservation) e
 		return nil
 	}
 	for _, reservation := range reservations {
-		if err := executor.capacity.ReserveSite(reservation.Name, reservation.Resources); err != nil {
-			return err
+		executor.capacity.RestoreSite(reservation)
+		if executor.capacity.Snapshot().Degraded {
+			log.Printf("nubit-agent: capacity admission degraded while restoring reservation %q", reservation.Name)
 		}
 	}
 	return nil
@@ -320,15 +321,24 @@ func (executor *Executor) ExecuteContext(parent context.Context, command Command
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { finishAdmission(err == nil) }()
+	settled := false
+	defer func() {
+		if settled {
+			finishAdmission(err == nil)
+		}
+	}()
 
-	result, err := executor.runWithTimeout(parent, command)
+	var result Result
+	result, err, settled = executor.runWithTimeout(parent, command, func(provisionerErr error) {
+		finishAdmission(provisionerErr == nil)
+	})
 	if err != nil {
 		executor.recordAudit(command, payloadSHA, started, "failed")
 		return Result{}, err
 	}
 	if cacheResult {
 		if saveErr := executor.store.Save(command.IdempotencyKey, result); saveErr != nil {
+			err = saveErr
 			executor.recordAudit(command, payloadSHA, started, "failed")
 			return Result{}, saveErr
 		}
@@ -361,10 +371,11 @@ func (executor *Executor) recordAudit(command Command, payloadSHA string, starte
 // runWithTimeout dispatches the command under a per-type timeout. A timeout is
 // reported and cached as terminal so a redelivery cannot start a second copy
 // while a legacy provisioner is still unwinding.
-func (executor *Executor) runWithTimeout(parent context.Context, command Command) (Result, error) {
+func (executor *Executor) runWithTimeout(parent context.Context, command Command, completed func(error)) (Result, error, bool) {
 	timeout := executor.timeoutFor(command.Type)
 	if timeout <= 0 {
-		return executor.runCommand(command)
+		result, err := executor.runCommand(command)
+		return result, err, true
 	}
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
@@ -389,6 +400,9 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 
 	select {
 	case <-ctx.Done():
+		if completed != nil {
+			go func() { outcome := <-done; completed(outcome.err) }()
+		}
 		// The provisioner is still running in its own goroutine and may
 		// eventually return; we deliberately do not wait for it. The
 		// command is recorded as failed and the control plane will see
@@ -406,11 +420,11 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 		// Persist the terminal timeout so a redelivery cannot start a second
 		// copy while the original legacy provisioner is still unwinding.
 		if saveErr := executor.store.Save(command.IdempotencyKey, failed); saveErr != nil {
-			return Result{}, saveErr
+			return Result{}, saveErr, false
 		}
-		return Result{}, errors.New(message)
+		return Result{}, errors.New(message), false
 	case outcome := <-done:
-		return outcome.result, outcome.err
+		return outcome.result, outcome.err, true
 	}
 }
 
