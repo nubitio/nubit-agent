@@ -126,7 +126,9 @@ func siteMutationID(command Command) (string, bool) {
 		DatabaseDelete, DatabaseUserCreate, DatabaseUserDelete, DatabaseGrant, DatabaseRevoke,
 		SiteFilesMkdir, SiteFilesWrite, SiteFilesDelete, SiteFilesUnzip, SiteFilesRename,
 		SiteCronReplace, SiteBackupCreate, SiteBackupRestore:
-		var request struct{ SiteID string `json:"siteId"` }
+		var request struct {
+			SiteID string `json:"siteId"`
+		}
 		if json.Unmarshal(command.Payload, &request) == nil {
 			return request.SiteID, true
 		}
