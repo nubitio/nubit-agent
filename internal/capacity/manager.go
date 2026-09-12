@@ -16,6 +16,7 @@ import (
 )
 
 var ErrCapacityExceeded = errors.New("host capacity reservation exceeds the configured envelope")
+var ErrSiteConflict = errors.New("site has another mutating command in progress")
 
 type Resources struct {
 	CPUmilli    int64 `json:"cpuMilli"`
@@ -65,13 +66,14 @@ type Manager struct {
 	degraded       bool
 	degradedReason string
 	generations    map[string]uint64
+	siteFences     map[string]uint64
 }
 
 func New(config Config, existing []Reservation) (*Manager, error) {
 	if err := validate(config); err != nil {
 		return nil, err
 	}
-	m := &Manager{config: config, reservations: map[string]Resources{}, operations: map[string]chan struct{}{}, inUse: map[string]int{}, generations: map[string]uint64{}}
+	m := &Manager{config: config, reservations: map[string]Resources{}, operations: map[string]chan struct{}{}, inUse: map[string]int{}, generations: map[string]uint64{}, siteFences: map[string]uint64{}}
 	for _, r := range existing {
 		m.restoreLocked(r)
 	}
@@ -150,12 +152,38 @@ func (m *Manager) ReserveSite(name string, r Resources) error {
 func (m *Manager) BeginSite(name string, r Resources) (SiteAdmission, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.siteFences[name] != 0 {
+		return SiteAdmission{}, ErrSiteConflict
+	}
 	previous, existed := m.reservations[name]
 	if err := m.reserveLocked(name, r); err != nil {
 		return SiteAdmission{}, err
 	}
 	m.generations[name]++
+	m.siteFences[name] = m.generations[name]
 	return SiteAdmission{Name: name, Generation: m.generations[name], Previous: previous, Existed: existed}, nil
+}
+
+// BeginCommand fences a site-targeted mutating command without changing its
+// capacity reservation. The fence intentionally survives a dispatcher
+// timeout until FinishCommand is called by the legacy provisioner callback.
+func (m *Manager) BeginCommand(name string) (SiteAdmission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.siteFences[name] != 0 {
+		return SiteAdmission{}, ErrSiteConflict
+	}
+	m.generations[name]++
+	m.siteFences[name] = m.generations[name]
+	return SiteAdmission{Name: name, Generation: m.generations[name]}, nil
+}
+
+func (m *Manager) FinishCommand(admission SiteAdmission) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.siteFences[admission.Name] == admission.Generation {
+		delete(m.siteFences, admission.Name)
+	}
 }
 
 // FinishSite only changes state if this admission is still current. A late
@@ -167,6 +195,7 @@ func (m *Manager) FinishSite(admission SiteAdmission, success bool) {
 	if m.generations[admission.Name] != admission.Generation {
 		return
 	}
+	delete(m.siteFences, admission.Name)
 	if !success {
 		if admission.Existed {
 			m.reservations[admission.Name] = admission.Previous

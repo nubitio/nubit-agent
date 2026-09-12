@@ -2,6 +2,7 @@ package command
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,11 +67,24 @@ func TestLateTimeoutCompletionCannotRestoreStaleReservation(t *testing.T) {
 	executor := NewExecutorWithConfig(ExecutorConfig{Capacity: admissionConfig(), TypeTimeouts: map[string]time.Duration{SiteCreate: 10 * time.Millisecond}}, NewMemoryStore(), slowSiteProvisioner{delay: 80 * time.Millisecond})
 	_, _ = executor.Execute(Command{ID: "create-timeout", Type: SiteCreate, Version: 1, IdempotencyKey: "create-timeout", Payload: []byte(`{"domain":"example.com","systemUser":"site-example","phpVersion":"8.4"}`)})
 	_, err := executor.Execute(Command{ID: "resource-update", Type: SiteSetResources, Version: 1, IdempotencyKey: "resource-update", Payload: []byte(`{"siteId":"example.com","resources":{"workers":1,"memoryLimitMb":64}}`)})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, capacity.ErrSiteConflict) {
+		t.Fatalf("expected cross-command site fence, got %v", err)
 	}
 	time.Sleep(120 * time.Millisecond)
+	if _, err := executor.Execute(Command{ID: "resource-update-after-fence", Type: SiteSetResources, Version: 1, IdempotencyKey: "resource-update-after-fence", Payload: []byte(`{"siteId":"example.com","resources":{"workers":1,"memoryLimitMb":64}}`)}); err != nil {
+		t.Fatal(err)
+	}
 	if got := executor.CapacitySnapshot().Reserved.PHPWorkers; got != 1 {
-		t.Fatalf("late timeout restored stale reservation: %d", got)
+		t.Fatalf("unexpected reservation after fence release: %d", got)
+	}
+}
+
+func TestRestoreRequiresScratchPreflight(t *testing.T) {
+	c := admissionConfig()
+	c.ScratchBytes = int64(^uint64(0) >> 1)
+	executor := NewExecutorWithConfig(ExecutorConfig{Capacity: c}, NewMemoryStore(), slowBackup{})
+	_, err := executor.Execute(Command{ID: "restore-no-scratch", Type: SiteBackupRestore, Version: 1, IdempotencyKey: "restore-no-scratch", Payload: []byte(`{"siteId":"example.com","name":"latest.tar.zst","confirmed":true}`)})
+	if err == nil || !strings.Contains(err.Error(), "insufficient scratch") {
+		t.Fatalf("expected restore scratch rejection, got %v", err)
 	}
 }
