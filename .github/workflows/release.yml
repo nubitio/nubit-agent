@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-         description: 'Exact immutable stable tag (vMAJOR.MINOR.PATCH) to build and publish once'
+        description: 'Exact immutable stable tag (vMAJOR.MINOR.PATCH) to build and publish once'
         required: true
 
 concurrency:
@@ -20,13 +20,59 @@ permissions:
   contents: read
 
 jobs:
+  resolve:
+    name: Resolve and validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - name: Validate stable tag and resolve commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "release tag must be vMAJOR.MINOR.PATCH: $tag" >&2
+            exit 1
+          }
+
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")
+          object_type=$(jq -r '.object.type' <<<"$ref")
+          object_sha=$(jq -r '.object.sha' <<<"$ref")
+          case "$object_type" in
+            commit)
+              commit="$object_sha"
+              ;;
+            tag)
+              tag_object=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")
+              [ "$(jq -r '.object.type' <<<"$tag_object")" = commit ] || {
+                echo "stable tag does not resolve directly to a commit: $tag" >&2
+                exit 1
+              }
+              commit=$(jq -r '.object.sha' <<<"$tag_object")
+              ;;
+            *)
+              echo "stable tag does not resolve to a commit: $tag" >&2
+              exit 1
+              ;;
+          esac
+
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
   verify:
     name: Vet and test
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -40,14 +86,15 @@ jobs:
     name: Build and publish
     # A tag never publishes without a green suite; the binary it produces is
     # what every server will pull down unattended.
-    needs: verify
+    needs: [resolve, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -57,15 +104,8 @@ jobs:
       - name: Resolve the release tag
         id: release
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: |
-          set -eu
-          tag="${RELEASE_TAG}"
-          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
-            echo "release tag must be vMAJOR.MINOR.PATCH: $tag" >&2
-            exit 1
-          }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Regression test for unsafe release tag values
         env:
