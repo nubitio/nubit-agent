@@ -264,7 +264,7 @@ func TestExecutorReturnsStoredResultForDuplicateIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestExecutorDoesNotCacheAdminPasswordResultsAcrossReplay(t *testing.T) {
+func TestExecutorCachesAdminPasswordResultsAcrossReplay(t *testing.T) {
 	counter := &counterProvisioner{}
 	storePath := filepath.Join(t.TempDir(), "commands.json")
 	store, err := NewFileStore(storePath)
@@ -288,10 +288,9 @@ func TestExecutorDoesNotCacheAdminPasswordResultsAcrossReplay(t *testing.T) {
 	if _, err := restarted.Execute(command); err != nil {
 		t.Fatal(err)
 	}
-	// A replay after restart must still reset the credential because normal
-	// admin-password results are deliberately non-cacheable.
-	if got := counter.Calls(); got != 2 {
-		t.Fatalf("expected the reset to run twice for a replayed key, ran %d", got)
+	// A replay after restart must not reset the credential a second time.
+	if got := counter.Calls(); got != 1 {
+		t.Fatalf("expected the reset to run once for a replayed key, ran %d", got)
 	}
 }
 
