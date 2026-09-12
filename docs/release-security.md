@@ -4,8 +4,10 @@
 
 The release workflow accepts only stable tags in the form `vMAJOR.MINOR.PATCH`.
 It resolves the tag to a commit before checkout, so a mutable branch or an
-untrusted dispatch input cannot choose the source that is signed. Existing
-GitHub releases are immutable: publishing the same tag twice fails.
+untrusted dispatch input cannot choose the source that is signed. The workflow
+treats releases as write-once: publishing the same tag twice fails. GitHub's
+release API may still report the release as mutable, so repository-level
+immutable-release enforcement must be enabled separately where supported.
 
 The agent binaries are signed with the Ed25519 private key stored in the
 GitHub Actions secret `NUBIT_RELEASE_SIGNING_PRIVATE_KEY`. The corresponding
