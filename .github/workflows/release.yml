@@ -18,6 +18,8 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   resolve:
@@ -90,6 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,6 +140,21 @@ jobs:
         run: |
           sha256sum nubit-agent_linux_* > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0.20.6
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/nubit-agent.spdx.json
+
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/nubit-agent_linux_amd64
+            dist/nubit-agent_linux_arm64
+            dist/SHA256SUMS
 
       - name: Sign release artifacts
         env:

@@ -345,16 +345,28 @@ case "$profile" in
     # `[ … ] && assign` would abort the script under `set -e` on the branch
     # whose test is false.
     case "$arch" in
-      amd64) stalwart_arch=x86_64 ;;
-      arm64) stalwart_arch=aarch64 ;;
+      amd64)
+        stalwart_arch=x86_64
+        stalwart_sha256=eb02fb00b2aa320a3ec1fa32560689ad7141033711931b0b0165e4b7145d0003
+        ;;
+      arm64)
+        stalwart_arch=aarch64
+        stalwart_sha256=00df357526af2e482d4b04c14f21d9fe9a1e7612ce6ea19e01c674176c83d606
+        ;;
       *) fail "No Stalwart build for $arch." ;;
     esac
-    # Downloaded over TLS but not signature-checked: Stalwart publishes
-    # sigstore bundles rather than a checksum file, and verifying those needs
-    # cosign on the host. The agent's own binary is checksum-verified above;
-    # this one is not, and that gap is deliberate rather than overlooked.
+    stalwart_version=v0.16.21
+    stalwart_asset="stalwart-${stalwart_arch}-unknown-linux-gnu.tar.gz"
+    # Stalwart's release also publishes a Sigstore bundle. The installer keeps
+    # the host dependency-free and pins the exact release asset digest here;
+    # changing the version requires deliberately updating both values.
     run curl -fsSL -o /tmp/stalwart.tar.gz \
-      "https://github.com/stalwartlabs/stalwart/releases/latest/download/stalwart-${stalwart_arch}-unknown-linux-gnu.tar.gz"
+      "https://github.com/stalwartlabs/stalwart/releases/download/${stalwart_version}/${stalwart_asset}"
+    if ! "$dry_run"; then
+      printf '%s  %s\n' "$stalwart_sha256" /tmp/stalwart.tar.gz | sha256sum -c - >/dev/null 2>&1 \
+        || fail "Checksum verification failed for Stalwart ${stalwart_version}."
+      printf 'Stalwart %s checksum verified.\n' "$stalwart_version"
+    fi
     run tar -xzf /tmp/stalwart.tar.gz -C /usr/local/bin stalwart
     run chmod 0755 /usr/local/bin/stalwart
 
