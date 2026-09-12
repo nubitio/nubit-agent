@@ -334,6 +334,25 @@ func TestResetForceRemovesEverySite(t *testing.T) {
 	}
 }
 
+func TestResetRetainsStateWhenHostCleanupFails(t *testing.T) {
+	base := t.TempDir()
+	store := NewMemoryStateStore()
+	if err := store.Save(State{SiteID: "a.example", Domain: "a.example", SystemUser: "aweb", PHPVersion: "8.4", DocumentRoot: filepath.Join(base, "sites", "a.example", "public")}); err != nil {
+		t.Fatal(err)
+	}
+	provisioner := Provisioner{
+		Runner: &fakeRunner{failAt: "userdel"}, Store: store,
+		Layout: Layout{SitesDir: filepath.Join(base, "sites"), CaddyConfigDir: filepath.Join(base, "caddy"), CaddyDisabledDir: filepath.Join(base, "caddy-off"), PHPConfigDir: filepath.Join(base, "php")},
+	}
+	result, err := provisioner.Reset()
+	if err != nil || len(result.Errors) == 0 {
+		t.Fatalf("expected reported host failure, result=%#v err=%v", result, err)
+	}
+	if _, found := store.Get("a.example"); !found {
+		t.Fatal("state was deleted despite host cleanup failure")
+	}
+}
+
 func TestDeleteRequiresSuspensionAndArchivesSite(t *testing.T) {
 	base := t.TempDir()
 	layout := Layout{

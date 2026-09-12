@@ -70,6 +70,9 @@ func runNodeReset(stateDir string, daemonRunning bool) (site.ResetResult, error)
 	if err != nil {
 		return res, err
 	}
+	if len(res.Errors) > 0 {
+		return res, fmt.Errorf("node reset had host/state failures: %s", strings.Join(res.Errors, "; "))
+	}
 	cs, err := command.NewFileStore(filepath.Join(stateDir, "commands.json"))
 	if err != nil {
 		return res, fmt.Errorf("load command results for reset: %w", err)

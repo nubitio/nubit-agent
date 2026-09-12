@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 )
 
 var ErrResultTooLarge = errors.New("command result exceeds configured size limit")
+var ErrResultLimit = errors.New("command result retention limit reached")
 
 const (
 	DefaultResultLimit = 10000
@@ -115,13 +115,14 @@ func (store *FileStore) Save(key string, result Result) error {
 		store.results = previous
 		return fmt.Errorf("%w: %d bytes exceeds limit %d", ErrResultTooLarge, len(contents), store.maxBytes)
 	}
-	store.prune(key)
+	if liveResultCount(store.results) > store.maxEntries {
+		return store.saveTombstone(key, previous, ErrResultLimit)
+	}
 	if contents, err := json.Marshal(store.results); err != nil {
 		store.results = previous
 		return err
 	} else if int64(len(contents)) > store.maxBytes {
-		store.results = previous
-		return fmt.Errorf("%w: serialized results are %d bytes, limit is %d", ErrResultTooLarge, len(contents), store.maxBytes)
+		return store.saveTombstone(key, previous, ErrResultTooLarge)
 	}
 	if err := store.persist(); err != nil {
 		if !durable.IsCommitted(err) {
@@ -131,6 +132,19 @@ func (store *FileStore) Save(key string, result Result) error {
 	}
 
 	return nil
+}
+
+func (store *FileStore) saveTombstone(key string, previous map[string]Result, cause error) error {
+	tombstone := Result{CommandID: key, Status: "failed", Tombstone: true, CreatedAt: store.results[key].CreatedAt,
+		Output: json.RawMessage(fmt.Sprintf(`{"error":%q}`, cause.Error()))}
+	store.results[key] = tombstone
+	if err := store.persist(); err != nil {
+		if !durable.IsCommitted(err) {
+			store.results = previous
+		}
+		return err
+	}
+	return cause
 }
 
 func cloneResults(results map[string]Result) map[string]Result {
@@ -173,10 +187,12 @@ func (store *FileStore) enforceLimits(protected string) error {
 	if store.results == nil {
 		return durable.Invalid(store.path, errors.New("expected an object, got null"))
 	}
-	store.prune(protected)
 	contents, err := json.Marshal(store.results)
 	if err != nil {
 		return err
+	}
+	if liveResultCount(store.results) > store.maxEntries {
+		return fmt.Errorf("%w: %d live entries exceeds limit %d", ErrResultLimit, liveResultCount(store.results), store.maxEntries)
 	}
 	if int64(len(contents)) > store.maxBytes {
 		return fmt.Errorf("%w: serialized results are %d bytes, limit is %d", ErrResultTooLarge, len(contents), store.maxBytes)
@@ -184,47 +200,12 @@ func (store *FileStore) enforceLimits(protected string) error {
 	return nil
 }
 
-func (store *FileStore) prune(protected string) {
-	for len(store.results) > store.maxEntries {
-		key, ok := oldestEvictableKey(store.results, protected)
-		if !ok {
-			return
+func liveResultCount(results map[string]Result) int {
+	count := 0
+	for _, result := range results {
+		if !result.Tombstone {
+			count++
 		}
-		delete(store.results, key)
 	}
-	for {
-		contents, err := json.Marshal(store.results)
-		if err != nil || int64(len(contents)) <= store.maxBytes || len(store.results) == 0 {
-			return
-		}
-		key, ok := oldestEvictableKey(store.results, protected)
-		if !ok {
-			return
-		}
-		delete(store.results, key)
-	}
+	return count
 }
-
-func oldestEvictableKey(results map[string]Result, protected string) (string, bool) {
-	keys := make([]string, 0, len(results))
-	for key := range results {
-		if key != protected {
-			keys = append(keys, key)
-		}
-	}
-	if len(keys) == 0 {
-		return "", false
-	}
-	// Zero timestamps are legacy entries and therefore oldest. Ties are
-	// deterministic, but age—not the key name—drives eviction.
-	sort.Slice(keys, func(i, j int) bool {
-		left, right := storeResultTime(results[keys[i]]), storeResultTime(results[keys[j]])
-		if left.Equal(right) {
-			return keys[i] < keys[j]
-		}
-		return left.Before(right)
-	})
-	return keys[0], true
-}
-
-func storeResultTime(result Result) time.Time { return result.CreatedAt }

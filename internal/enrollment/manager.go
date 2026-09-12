@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -16,9 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
+
+	"github.com/nubitio/nubit-agent/internal/durable"
 )
 
 // Manager is the on-disk orchestrator for the agent's mTLS identity. It
@@ -43,23 +42,16 @@ type Manager struct {
 	// the manager builds a Client with a sensible default. Tests inject
 	// their own transport; production code does not.
 	HTTPClient *http.Client
+	// WriterLock is supplied by the daemon, which already owns the process-wide
+	// lock. Standalone enrollment acquires the same lock itself.
+	WriterLock *durable.WriterLock
 }
 
 const (
 	keyFile         = "agent-key.pem"
 	certificateFile = "agent-cert.pem"
 	caChainFile     = "ca-cert.pem"
-	manifestFile    = "material-manifest.json"
 )
-
-var materialWriter sync.Mutex
-
-type materialManifest struct {
-	Generation  string `json:"generation"`
-	Key         string `json:"key"`
-	Certificate string `json:"certificate"`
-	CA          string `json:"ca"`
-}
 
 // ErrNotEnrolled is returned by operations that require an existing
 // certificate when none has been written yet.
@@ -76,8 +68,13 @@ var ErrAlreadyEnrolled = errors.New("agent is already enrolled")
 // non-expired certificate is already on disk. The caller can wipe the
 // material (or wait for the renewal loop to handle it) and retry.
 func (manager Manager) Enroll(ctx context.Context, token string) error {
-	materialWriter.Lock()
-	defer materialWriter.Unlock()
+	lock, err := manager.acquireWriterLock()
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
 	if token == "" {
 		return errors.New("enrollment token is required")
 	}
@@ -89,11 +86,6 @@ func (manager Manager) Enroll(ctx context.Context, token string) error {
 	if controlURL.Scheme != "https" && !(controlURL.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
 		return errors.New("enrollment requires HTTPS except on loopback")
 	}
-	unlock, err := manager.lockMaterial()
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	if manager.alreadyEnrolled(time.Now().UTC()) {
 		return ErrAlreadyEnrolled
 	}
@@ -149,13 +141,13 @@ func (manager Manager) alreadyEnrolled(now time.Time) bool {
 // reissue the certificate. The renewal is signed with the existing mTLS
 // identity, so the caller must have already enrolled.
 func (manager Manager) Renew(ctx context.Context) error {
-	materialWriter.Lock()
-	defer materialWriter.Unlock()
-	unlock, err := manager.lockMaterial()
+	lock, err := manager.acquireWriterLock()
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	if lock != nil {
+		defer lock.Close()
+	}
 	if !manager.Enrolled() {
 		return ErrNotEnrolled
 	}
@@ -196,22 +188,14 @@ func (manager Manager) Renew(ctx context.Context) error {
 	return nil
 }
 
-func (manager Manager) lockMaterial() (func(), error) {
-	if err := os.MkdirAll(manager.Directory, 0o750); err != nil {
-		return nil, err
+func (manager Manager) acquireWriterLock() (*durable.WriterLock, error) {
+	if manager.WriterLock != nil {
+		return nil, nil
 	}
-	file, err := os.OpenFile(filepath.Join(manager.Directory, ".material.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
+	if manager.StateDirectory == "" {
+		return nil, errors.New("state directory is required for writer lock")
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return func() {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-	}, nil
+	return durable.Acquire(filepath.Join(manager.StateDirectory, "writer.lock"))
 }
 
 func (manager Manager) newClient(token string) (*Client, error) {
@@ -315,23 +299,6 @@ func (manager Manager) persistMaterial(keyPEM []byte, response *EnrollResponse) 
 	if err := os.MkdirAll(manager.Directory, 0o750); err != nil {
 		return err
 	}
-	return manager.persistGeneration(keyPEM, response)
-}
-
-func (manager Manager) persistCertificate(response *EnrollResponse) error {
-	key, err := os.ReadFile(manager.materialPath(keyFile))
-	if err != nil {
-		return err
-	}
-	return manager.persistGeneration(key, response)
-}
-
-func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse) error {
-	generation := fmt.Sprintf("generation-%d", time.Now().UnixNano())
-	directory := filepath.Join(manager.Directory, generation)
-	if err := os.Mkdir(directory, 0o700); err != nil {
-		return err
-	}
 	files := []struct {
 		name string
 		data []byte
@@ -342,26 +309,22 @@ func (manager Manager) persistGeneration(keyPEM []byte, response *EnrollResponse
 		{caChainFile, []byte(caBundleFor(response)), 0o644},
 	}
 	for _, file := range files {
-		if err := writeAtomic(filepath.Join(directory, file.name), file.data, file.mode); err != nil {
+		if err := writeAtomic(filepath.Join(manager.Directory, file.name), file.data, file.mode); err != nil {
 			return err
 		}
 	}
-	manifest := materialManifest{
-		Generation:  generation,
-		Key:         filepath.Join(generation, keyFile),
-		Certificate: filepath.Join(generation, certificateFile),
-		CA:          filepath.Join(generation, caChainFile),
+	return nil
+}
+
+func (manager Manager) persistCertificate(response *EnrollResponse) error {
+	files := []struct {
+		name string
+		data []byte
+		mode os.FileMode
+	}{
+		{certificateFile, []byte(response.Certificate), 0o644},
+		{caChainFile, []byte(caBundleFor(response)), 0o644},
 	}
-	contents, err := json.Marshal(manifest)
-	if err != nil {
-		return err
-	}
-	if err := writeAtomic(filepath.Join(manager.Directory, manifestFile), contents, 0o600); err != nil {
-		return err
-	}
-	// Keep the historical paths available to older tooling and tests. Readers
-	// in this package use the manifest, so these compatibility mirrors cannot
-	// expose a mixed generation after a restart.
 	for _, file := range files {
 		if err := writeAtomic(filepath.Join(manager.Directory, file.name), file.data, file.mode); err != nil {
 			return err
@@ -377,30 +340,8 @@ func caBundleFor(response *EnrollResponse) string {
 	return response.CACertificate
 }
 
-func (manager Manager) materialPath(name string) string {
-	contents, err := os.ReadFile(filepath.Join(manager.Directory, manifestFile))
-	if err == nil {
-		var manifest materialManifest
-		if json.Unmarshal(contents, &manifest) == nil && manifest.Generation != "" {
-			var relative string
-			switch name {
-			case keyFile:
-				relative = manifest.Key
-			case certificateFile:
-				relative = manifest.Certificate
-			case caChainFile:
-				relative = manifest.CA
-			}
-			if relative != "" {
-				return filepath.Join(manager.Directory, relative)
-			}
-		}
-	}
-	return filepath.Join(manager.Directory, name)
-}
-
 func (manager Manager) loadPrivateKey() (*ecdsa.PrivateKey, error) {
-	keyPEM, err := os.ReadFile(manager.materialPath(keyFile))
+	keyPEM, err := os.ReadFile(filepath.Join(manager.Directory, keyFile))
 	if err != nil {
 		return nil, err
 	}
@@ -423,11 +364,11 @@ func (manager Manager) loadPrivateKey() (*ecdsa.PrivateKey, error) {
 // authenticate against Nubit Control. It loads the cert + key on every call
 // so a renewed certificate is picked up without restarting the agent.
 func (manager Manager) TLSConfig() (*tls.Config, error) {
-	certificate, err := tls.LoadX509KeyPair(manager.materialPath(certificateFile), manager.materialPath(keyFile))
+	certificate, err := tls.LoadX509KeyPair(filepath.Join(manager.Directory, certificateFile), filepath.Join(manager.Directory, keyFile))
 	if err != nil {
 		return nil, err
 	}
-	caPEM, err := os.ReadFile(manager.materialPath(caChainFile))
+	caPEM, err := os.ReadFile(filepath.Join(manager.Directory, caChainFile))
 	if err != nil {
 		return nil, err
 	}
@@ -440,7 +381,7 @@ func (manager Manager) TLSConfig() (*tls.Config, error) {
 		MinVersion: tls.VersionTLS13,
 		RootCAs:    roots,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			current, err := tls.LoadX509KeyPair(manager.materialPath(certificateFile), manager.materialPath(keyFile))
+			current, err := tls.LoadX509KeyPair(filepath.Join(manager.Directory, certificateFile), filepath.Join(manager.Directory, keyFile))
 			return &current, err
 		},
 	}, nil
@@ -450,11 +391,11 @@ func (manager Manager) TLSConfig() (*tls.Config, error) {
 // signed by the persisted CA bundle, and unexpired. It returns the parsed
 // certificate so the caller can log expiry information without re-parsing.
 func (manager Manager) VerifyCertificate() (*x509.Certificate, error) {
-	certPEM, err := os.ReadFile(manager.materialPath(certificateFile))
+	certPEM, err := os.ReadFile(filepath.Join(manager.Directory, certificateFile))
 	if err != nil {
 		return nil, err
 	}
-	caPEM, err := os.ReadFile(manager.materialPath(caChainFile))
+	caPEM, err := os.ReadFile(filepath.Join(manager.Directory, caChainFile))
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +418,7 @@ func (manager Manager) VerifyCertificate() (*x509.Certificate, error) {
 
 // CertificateExpiry returns the NotAfter of the persisted agent certificate.
 func (manager Manager) CertificateExpiry() (time.Time, error) {
-	contents, err := os.ReadFile(manager.materialPath(certificateFile))
+	contents, err := os.ReadFile(filepath.Join(manager.Directory, certificateFile))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -502,7 +443,7 @@ func (manager Manager) NeedsRenewal(now time.Time, before time.Duration) bool {
 // Enrolled reports whether the persisted material is complete.
 func (manager Manager) Enrolled() bool {
 	for _, name := range []string{keyFile, certificateFile, caChainFile} {
-		if _, err := os.Stat(manager.materialPath(name)); err != nil {
+		if _, err := os.Stat(filepath.Join(manager.Directory, name)); err != nil {
 			return false
 		}
 	}

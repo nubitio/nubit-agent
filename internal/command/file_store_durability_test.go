@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,8 +22,8 @@ func TestFileStoreKeepsNewAndReusedKeysDuringEviction(t *testing.T) {
 	if err := store.Save("c", Result{CommandID: "c", CreatedAt: old.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save("a", Result{CommandID: "a"}); err != nil {
-		t.Fatal(err)
+	if err := store.Save("a", Result{CommandID: "a"}); !errors.Is(err, ErrResultLimit) {
+		t.Fatalf("expected tombstone retention error, got %v", err)
 	}
 	if _, ok := store.Get("a"); !ok {
 		t.Fatal("newly written key was evicted")
@@ -59,18 +60,7 @@ func TestFileStoreAppliesConfiguredLimitDuringStartup(t *testing.T) {
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewFileStoreWithLimits(path, 2, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := store.Get("old"); ok {
-		t.Fatal("startup retention kept the oldest result")
-	}
-	reopened, err := NewFileStoreWithLimits(path, 2, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reopened.results) != 2 {
-		t.Fatalf("startup retention was not persisted: %d", len(reopened.results))
+	if _, err := NewFileStoreWithLimits(path, 2, 1<<20); !errors.Is(err, ErrResultLimit) {
+		t.Fatalf("expected startup limit refusal, got %v", err)
 	}
 }

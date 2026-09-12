@@ -14,15 +14,19 @@ func TestFileStoreEvictsResultsAtConfiguredLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"a", "b", "c"} {
-		if err := store.Save(key, Result{CommandID: key}); err != nil {
+		err := store.Save(key, Result{CommandID: key})
+		if key != "c" && err != nil {
 			t.Fatal(err)
 		}
+		if key == "c" && !errors.Is(err, ErrResultLimit) {
+			t.Fatalf("expected retention limit, got %v", err)
+		}
 	}
-	if _, ok := store.Get("a"); ok {
-		t.Fatal("oldest result was not evicted")
+	if _, ok := store.Get("a"); !ok {
+		t.Fatal("idempotency key was evicted")
 	}
-	if got := len(store.results); got != 2 {
-		t.Fatalf("got %d results", got)
+	if got := len(store.results); got != 3 {
+		t.Fatalf("got %d retained keys", got)
 	}
 }
 

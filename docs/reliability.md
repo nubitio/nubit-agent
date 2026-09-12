@@ -4,8 +4,10 @@ The daemon now takes an exclusive `writer.lock` in `NUBIT_AGENT_STATE_DIR`.
 The daemon and mutating TUI actions therefore fail closed rather than racing
 over local state. State, command results, and outbox updates write a synced
 temporary file and atomically rename it; audit records are fsynced and rotate
-at bounded size. Command results are bounded by count and 64 MiB by default;
-the cache may evict old results. Pending outbox results are never evicted:
+at bounded size. Command results are bounded by count and 64 MiB by default,
+but are never evicted: when a limit would be exceeded, the command key is
+retained with a compact tombstone so a redelivery cannot re-run a side-effecting
+command. Pending outbox results are never evicted:
 `Put` returns `ErrOutboxFull` and leaves the previous file and in-memory map
 unchanged when either limit would be exceeded. Operators can observe and alert
 on that error while Control remains unavailable. Rotated audit files are
@@ -34,6 +36,9 @@ This is the safest vertical slice without changing the Control protocol:
   remain CI follow-ups; deterministic unit tests cover atomic replacement,
   corruption refusal, retention, and writer fencing.
 
-On targets without the Unix `flock` implementation, the package still builds
-but `durable.Acquire` returns `ErrWriterLockUnsupported`; the daemon therefore
-fails closed instead of running without its writer fence.
+The supported runtime targets are Linux and macOS, where the daemon uses Unix
+`flock`. Windows is compile-only in CI: the package builds, but
+`durable.Acquire` returns `ErrWriterLockUnsupported` and the daemon fails closed
+instead of pretending to provide a writer fence. Enrollment and renewal use
+the same lock, and identity files use synced temporary writes plus durable
+parent-directory sync before reporting success.
