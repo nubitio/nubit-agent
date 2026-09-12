@@ -7,6 +7,7 @@ import (
 )
 
 const SystemPing = "system.ping"
+const SystemUpdate = "system.update"
 const SiteCreate = "site.create"
 const SiteInspect = "site.inspect"
 const SiteSuspend = "site.suspend"

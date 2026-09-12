@@ -18,6 +18,15 @@ import (
 
 type fakeSiteProvisioner struct{}
 
+type fakeUpdater struct {
+	tag string
+	err error
+}
+
+func (updater fakeUpdater) StageRelease(context.Context, string, string) (string, error) {
+	return updater.tag, updater.err
+}
+
 func (fakeSiteProvisioner) Create(domain, user, phpVersion string, resources site.Resources) (site.CreateResult, error) {
 	return site.CreateResult{SiteID: domain, DocumentRoot: "/srv/" + domain + "/public", PHPSocket: "/run/php/" + user + ".sock", CaddyConfigHash: "sha256:caddy", PHPConfigHash: "sha256:php"}, nil
 }
@@ -112,6 +121,41 @@ func TestExecutorListsSiteFiles(t *testing.T) {
 	}
 	if 1 != len(listed.Entries) || "index.html" != listed.Entries[0].Name {
 		t.Fatalf("unexpected list: %#v", listed)
+	}
+}
+
+func TestExecutorStagesExactSystemUpdate(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeUpdater{tag: "v0.6.3"})
+	result, err := executor.Execute(Command{
+		ID:             "cmd_update",
+		Type:           SystemUpdate,
+		Version:        1,
+		IdempotencyKey: "system:update:v0.6.3",
+		Payload:        []byte(`{"tag":"v0.6.3","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]string
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output["stagedTag"] != "v0.6.3" || output["status"] != "restart_pending" {
+		t.Fatalf("unexpected update output: %#v", output)
+	}
+}
+
+func TestExecutorRejectsUnsafeSystemUpdatePayload(t *testing.T) {
+	executor := NewExecutor(NewMemoryStore(), fakeUpdater{tag: "v0.6.3"})
+	_, err := executor.Execute(Command{
+		ID:             "cmd_update_unsafe",
+		Type:           SystemUpdate,
+		Version:        1,
+		IdempotencyKey: "system:update:unsafe",
+		Payload:        []byte(`{"tag":"latest","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "vMAJOR.MINOR.PATCH") {
+		t.Fatalf("expected unsafe tag rejection, got %v", err)
 	}
 }
 

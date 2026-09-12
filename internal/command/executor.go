@@ -19,6 +19,7 @@ import (
 	"github.com/nubitio/nubit-agent/internal/files"
 	"github.com/nubitio/nubit-agent/internal/logs"
 	"github.com/nubitio/nubit-agent/internal/mail"
+	"github.com/nubitio/nubit-agent/internal/selfupdate"
 	"github.com/nubitio/nubit-agent/internal/site"
 	"github.com/nubitio/nubit-agent/internal/tls"
 )
@@ -75,7 +76,10 @@ type Executor struct {
 	backups BackupProvisioner
 	mail    MailProvisioner
 	tls     TLSInspector
-	audit   *audit.Logger
+	updater interface {
+		StageRelease(context.Context, string, string) (string, error)
+	}
+	audit *audit.Logger
 
 	defaultTimeout time.Duration
 	typeTimeouts   map[string]time.Duration
@@ -253,6 +257,11 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		executor.typeRates = map[string]float64{}
 	}
 	for _, service := range services {
+		if updater, ok := service.(interface {
+			StageRelease(context.Context, string, string) (string, error)
+		}); ok {
+			executor.updater = updater
+		}
 		if sites, ok := service.(SiteProvisioner); ok {
 			executor.sites = sites
 		}
@@ -282,6 +291,16 @@ func NewExecutorWithConfig(config ExecutorConfig, store Store, services ...any) 
 		}
 	}
 	return executor
+}
+
+// SetUpdater enables the control-plane-triggered exact release path without
+// changing the constructor used by the existing command tests.
+func (executor *Executor) SetUpdater(updater *selfupdate.Updater) {
+	if updater == nil {
+		executor.updater = nil
+		return
+	}
+	executor.updater = updater
 }
 
 func (executor *Executor) Execute(command Command) (Result, error) {
@@ -391,7 +410,7 @@ func (executor *Executor) recordAudit(command Command, payloadSHA string, starte
 func (executor *Executor) runWithTimeout(parent context.Context, command Command, completed func(error)) (Result, error, bool) {
 	timeout := executor.timeoutFor(command.Type)
 	if timeout <= 0 {
-		result, err := executor.runCommand(command)
+		result, err := executor.runCommand(parent, command)
 		return result, err, true
 	}
 
@@ -404,7 +423,7 @@ func (executor *Executor) runWithTimeout(parent context.Context, command Command
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := executor.runCommand(command)
+		result, err := executor.runCommand(ctx, command)
 		// runCommand returns Result{} for a non-timeout error; let the
 		// parent goroutine build the failure Result so the persistence
 		// path is shared.
@@ -526,12 +545,25 @@ func (executor *Executor) rateFor(commandType string) float64 {
 	return executor.defaultRate
 }
 
-func (executor *Executor) runCommand(command Command) (Result, error) {
+func (executor *Executor) runCommand(ctx context.Context, command Command) (Result, error) {
 	var output []byte
 	var err error
 	switch command.Type {
 	case SystemPing:
 		output, err = json.Marshal(map[string]string{"receivedAt": time.Now().UTC().Format(time.RFC3339)})
+	case SystemUpdate:
+		request, parseErr := parseSystemUpdate(command.Payload)
+		if parseErr != nil {
+			return Result{}, parseErr
+		}
+		if executor.updater == nil {
+			return Result{}, errors.New("self-update is not configured")
+		}
+		staged, updateErr := executor.updater.StageRelease(ctx, request.Tag, request.SHA256)
+		if updateErr != nil {
+			return Result{}, updateErr
+		}
+		output, err = json.Marshal(map[string]string{"stagedTag": staged, "status": "restart_pending"})
 	case SiteCreate:
 		site, parseErr := parseSiteCreate(command.Payload)
 		if parseErr != nil {

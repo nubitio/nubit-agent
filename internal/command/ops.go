@@ -3,9 +3,32 @@ package command
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 
 	"github.com/nubitio/nubit-agent/internal/cron"
 )
+
+var releaseTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+
+type SystemUpdatePayload struct {
+	Tag    string `json:"tag"`
+	SHA256 string `json:"sha256"`
+}
+
+func parseSystemUpdate(payload json.RawMessage) (SystemUpdatePayload, error) {
+	var request SystemUpdatePayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return request, err
+	}
+	if !releaseTagPattern.MatchString(request.Tag) {
+		return request, errors.New("system update tag must be vMAJOR.MINOR.PATCH")
+	}
+	if !sha256Pattern.MatchString(request.SHA256) {
+		return request, errors.New("system update sha256 must be 64 hexadecimal characters")
+	}
+	return request, nil
+}
 
 type CronReplacePayload struct {
 	SiteID string      `json:"siteId"`
