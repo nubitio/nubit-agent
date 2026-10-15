@@ -43,7 +43,7 @@ Agent-supported command families known in this codebase are:
 | cron | `site.cron.list`, `site.cron.replace` | Supported by Agent; lifecycle/control policy remains pending. |
 | logs | `site.logs.read` | Supported by Agent; operational exposure policy remains pending. |
 | backup | `site.backup.list`, `site.backup.create`, `site.backup.restore`, `site.backup.verify` | S3 object storage. `site.backup.create` honours the plan's `retentionDays` (falls back to "7 newest" when absent). `site.backup.verify` extracts the newest archive to a scratch dir to prove it is recoverable, without touching the live site. The per-plan *cadence* and the RPO/RTO scheduler live in nubit-control. |
-| mail | `mail.domain.create`, `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`, `mail.mailbox.set-quota`, `mail.mailbox.delete`, `mail.inventory` | Agent capability exists when mail is configured; complete Control lifecycle and mailbox restore automation remain pending. |
+| mail | `mail.domain.create`, `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`, `mail.mailbox.set-quota`, `mail.mailbox.delete`, `mail.alias.set`, `mail.inventory` | Agent capability exists when mail is configured; complete Control lifecycle and mailbox restore automation remain pending. |
 
 ## Install
 

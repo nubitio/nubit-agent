@@ -2,6 +2,8 @@ package mail
 
 import (
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -13,6 +15,8 @@ type fakeJMAP struct {
 	accounts []accountRecord
 	calls    []call
 	fail     map[string]string
+	// rejectUpdate, when set, makes an Account update fail with that server error type.
+	rejectUpdate string
 }
 
 type call struct {
@@ -46,6 +50,11 @@ func (jmap *fakeJMAP) Invoke(method string, arguments map[string]any) (json.RawM
 				EmailAddress: created(arguments, "name") + "@example.pe",
 			})
 			return json.Marshal(map[string]any{"created": map[string]any{"u": map[string]any{"id": "acc1"}}})
+		}
+		if jmap.rejectUpdate != "" {
+			return json.Marshal(map[string]any{
+				"notUpdated": map[string]any{"acc1": map[string]any{"type": jmap.rejectUpdate, "description": "rejected by the server"}},
+			})
 		}
 		return json.Marshal(map[string]any{"updated": map[string]any{"acc1": nil}})
 	}
@@ -250,5 +259,156 @@ func TestInvalidAddressesAreRefused(t *testing.T) {
 func TestNoMailServerConfiguredIsReported(t *testing.T) {
 	if _, err := (Manager{}).CreateDomain("cliente.pe"); err == nil {
 		t.Fatal("an unconfigured manager reported success")
+	}
+}
+
+func aliasFixture() *fakeJMAP {
+	return &fakeJMAP{
+		domains:  []domainRecord{{ID: "dom1", Name: "cliente.pe"}, {ID: "dom2", Name: "otro.pe"}},
+		accounts: []accountRecord{{ID: "acc1", Name: "hola", DomainID: "dom1", EmailAddress: "hola@cliente.pe"}},
+	}
+}
+
+func aliasUpdate(t *testing.T, jmap *fakeJMAP) map[string]any {
+	t.Helper()
+	for _, candidate := range jmap.calls {
+		update, ok := candidate.arguments["update"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if fields, ok := update["acc1"].(map[string]any); ok {
+			if aliases, ok := fields["aliases"].(map[string]any); ok {
+				return aliases
+			}
+		}
+	}
+	t.Fatal("no alias update was sent")
+
+	return nil
+}
+
+func TestSetAliasesWritesTheWholeIndexedList(t *testing.T) {
+	jmap := aliasFixture()
+
+	result, err := Manager{JMAP: jmap}.SetAliases("Hola@Cliente.PE", []string{"Info@Cliente.PE", "ventas@otro.pe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Aliases, []string{"info@cliente.pe", "ventas@otro.pe"}) {
+		t.Fatalf("aliases were not normalised: %#v", result.Aliases)
+	}
+
+	// The server's list is indexed ("0", "1"...) and re-indexes on removal, so the
+	// full list goes out under positional keys, never a patch of one position.
+	sent := aliasUpdate(t, jmap)
+	want := map[string]any{
+		"0": map[string]any{"name": "info", "domainId": "dom1", "enabled": true},
+		"1": map[string]any{"name": "ventas", "domainId": "dom2", "enabled": true},
+	}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("unexpected alias list on the wire: %#v", sent)
+	}
+}
+
+func TestSetAliasesWithAnEmptyListClearsThem(t *testing.T) {
+	jmap := aliasFixture()
+
+	if _, err := (Manager{JMAP: jmap}).SetAliases("hola@cliente.pe", []string{}); err != nil {
+		t.Fatal(err)
+	}
+	if sent := aliasUpdate(t, jmap); len(sent) != 0 {
+		t.Fatalf("an empty list must send an empty set, got %#v", sent)
+	}
+}
+
+func TestSetAliasesIsIdempotent(t *testing.T) {
+	first, second := aliasFixture(), aliasFixture()
+	list := []string{"info@cliente.pe"}
+
+	if _, err := (Manager{JMAP: first}).SetAliases("hola@cliente.pe", list); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Manager{JMAP: second}).SetAliases("hola@cliente.pe", list); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(aliasUpdate(t, first), aliasUpdate(t, second)) {
+		t.Fatal("the same input must produce the same write")
+	}
+}
+
+func TestSetAliasesRefusesWhatCouldNeverWork(t *testing.T) {
+	cases := map[string][]string{
+		"its own address":        {"hola@cliente.pe"},
+		"a duplicate":            {"info@cliente.pe", "INFO@cliente.pe"},
+		"an unregistered domain": {"info@desconocido.pe"},
+		"a malformed address":    {"no-es-una-direccion"},
+	}
+	for name, aliases := range cases {
+		jmap := aliasFixture()
+		if _, err := (Manager{JMAP: jmap}).SetAliases("hola@cliente.pe", aliases); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+		for _, candidate := range jmap.calls {
+			if candidate.method == "x:Account/set" {
+				t.Errorf("%s still reached the server", name)
+			}
+		}
+	}
+
+	tooMany := make([]string, MaxAliases+1)
+	for i := range tooMany {
+		tooMany[i] = strings.Repeat("a", i+1) + "@cliente.pe"
+	}
+	if _, err := (Manager{JMAP: aliasFixture()}).SetAliases("hola@cliente.pe", tooMany); err == nil {
+		t.Error("more than MaxAliases was accepted")
+	}
+}
+
+func TestSetAliasesNeedsAnExistingMailbox(t *testing.T) {
+	if _, err := (Manager{JMAP: aliasFixture()}).SetAliases("nadie@cliente.pe", []string{"info@cliente.pe"}); err == nil {
+		t.Fatal("an alias was set on a mailbox that does not exist")
+	}
+}
+
+func TestAnAddressAlreadyInUseIsATypedError(t *testing.T) {
+	jmap := aliasFixture()
+	jmap.rejectUpdate = "primaryKeyViolation"
+
+	_, err := Manager{JMAP: jmap}.SetAliases("hola@cliente.pe", []string{"info@cliente.pe"})
+	if !errors.Is(err, ErrAddressInUse) {
+		t.Fatalf("expected ErrAddressInUse, got %v", err)
+	}
+
+	jmap.rejectUpdate = "invalidForeignKey"
+	if _, err = (Manager{JMAP: jmap}).SetAliases("hola@cliente.pe", []string{"info@cliente.pe"}); err == nil || errors.Is(err, ErrAddressInUse) {
+		t.Fatalf("another server rejection must stay a plain error, got %v", err)
+	}
+}
+
+func TestInventoryListsAliasesAsAddresses(t *testing.T) {
+	jmap := aliasFixture()
+	jmap.accounts[0].Aliases = map[string]aliasRecord{
+		"0": {Name: "Ventas", DomainID: "dom2", Enabled: true},
+		"1": {Name: "info", DomainID: "dom1", Enabled: true},
+		"2": {Name: "apagado", DomainID: "dom1", Enabled: false},
+	}
+
+	inventory, err := Manager{JMAP: jmap}.Inventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(inventory[0].Aliases, []string{"info@cliente.pe", "ventas@otro.pe"}) {
+		t.Fatalf("aliases must be sorted addresses without disabled ones: %#v", inventory[0].Aliases)
+	}
+}
+
+func TestInventoryWithoutAliasesCostsNoDomainLookup(t *testing.T) {
+	jmap := aliasFixture()
+
+	if _, err := (Manager{JMAP: jmap}).Inventory(); err != nil {
+		t.Fatal(err)
+	}
+	if _, called := jmap.find("x:Domain/get"); called {
+		t.Fatal("the domain list was read although no mailbox has aliases")
 	}
 }

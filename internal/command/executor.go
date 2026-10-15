@@ -171,6 +171,7 @@ type MailProvisioner interface {
 	SetPassword(address, password string) error
 	SetQuota(address string, quotaBytes int64) (mail.MailboxResult, error)
 	DeleteMailbox(address string, confirmed bool) (mail.MailboxResult, error)
+	SetAliases(address string, aliases []string) (mail.MailboxResult, error)
 	Inventory() ([]mail.MailboxResult, error)
 }
 
@@ -970,7 +971,7 @@ func (executor *Executor) runCommand(ctx context.Context, command Command) (Resu
 		}
 		output, err = json.Marshal(map[string]any{"ok": true})
 	case MailDomainCreate, MailDomainDelete, MailMailboxCreate, MailMailboxSetPassword,
-		MailMailboxSetQuota, MailMailboxDelete, MailInventory:
+		MailMailboxSetQuota, MailMailboxDelete, MailAliasSet, MailInventory:
 		if executor.mail == nil {
 			return Result{}, errors.New("mail provisioner is not configured")
 		}
@@ -1108,6 +1109,12 @@ func (executor *Executor) executeMail(commandType string, payload json.RawMessag
 		return json.Marshal(mailbox)
 	case MailMailboxDelete:
 		mailbox, err := executor.mail.DeleteMailbox(request.Address, request.Confirm)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(mailbox)
+	case MailAliasSet:
+		mailbox, err := executor.mail.SetAliases(request.Address, request.Aliases)
 		if err != nil {
 			return nil, err
 		}

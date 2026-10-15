@@ -6,3 +6,4 @@
 | [ADR-002](ADR-002-mvp-platform-validation.md) | MVP platform validation | Accepted |
 | [ADR-003](ADR-003-ubuntu-2604-amd64-operator-validation.md) | Ubuntu 26.04 amd64 operator validation | Accepted |
 | [ADR-004](ADR-004-mvp-operational-documentation-boundary.md) | MVP operational documentation boundary | Accepted |
+| [ADR-006](ADR-006-mail-alias-set.md) | `mail.alias.set` — extra addresses for a mailbox | Accepted |

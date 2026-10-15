@@ -18,6 +18,9 @@ type MailPayload struct {
 	Password   string `json:"password"`
 	QuotaBytes int64  `json:"quotaBytes"`
 	Confirm    bool   `json:"confirm"`
+	// Aliases is the complete set of extra addresses for the mailbox. It must be
+	// present: an absent field would otherwise read as "remove them all".
+	Aliases []string `json:"aliases"`
 }
 
 func parseMail(payload json.RawMessage, commandType string) (MailPayload, error) {
@@ -48,6 +51,10 @@ func parseMail(payload json.RawMessage, commandType string) (MailPayload, error)
 	case MailDomainDelete, MailMailboxDelete:
 		if !request.Confirm {
 			return request, errors.New("deleting mail requires explicit confirmation")
+		}
+	case MailAliasSet:
+		if request.Aliases == nil {
+			return request, errors.New("mail.alias.set needs an aliases list (send [] to remove them all)")
 		}
 	}
 
