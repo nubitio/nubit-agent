@@ -64,3 +64,9 @@ portal's reset action and returns the new password once.
 Real-VM / disposable-container validation against wp-cli + MariaDB is the
 follow-up before it runs on a customer node; managed core/plugin auto-updates
 are separate.
+
+**Carve-out (`mail.alias.set`, ADR-006).** One closed command that writes the complete list of
+extra addresses (aliases) of an existing mailbox on the node's Stalwart. Payload-validated (own
+address, duplicates, unregistered domains, a cap of 20), idempotent because the whole list is
+written rather than patched, and tested against a fake JMAP server and a real Stalwart. External
+forwarding is **not** part of it and stays pending.

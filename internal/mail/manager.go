@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -41,11 +43,12 @@ type DomainResult struct {
 // MailboxResult reports a mailbox. The password is never echoed: the control
 // plane already knows what it sent, and command output is persisted.
 type MailboxResult struct {
-	Address   string `json:"address"`
-	ID        string `json:"id"`
-	Domain    string `json:"domain"`
-	QuotaByte int64  `json:"quotaBytes,omitempty"`
-	Status    string `json:"status"`
+	Address   string   `json:"address"`
+	ID        string   `json:"id"`
+	Domain    string   `json:"domain"`
+	QuotaByte int64    `json:"quotaBytes,omitempty"`
+	Aliases   []string `json:"aliases,omitempty"`
+	Status    string   `json:"status"`
 }
 
 type setResponse struct {
@@ -59,6 +62,12 @@ type setResponse struct {
 	NotDestroy map[string]methodError     `json:"notDestroyed"`
 }
 
+type aliasRecord struct {
+	Name     string `json:"name"`
+	DomainID string `json:"domainId"`
+	Enabled  bool   `json:"enabled"`
+}
+
 type domainRecord struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -69,6 +78,9 @@ type accountRecord struct {
 	Name         string `json:"name"`
 	DomainID     string `json:"domainId"`
 	EmailAddress string `json:"emailAddress"`
+	// Aliases is an indexed list on the server ("0", "1", ...), not a map keyed by
+	// name, and it re-indexes when an entry is removed.
+	Aliases map[string]aliasRecord `json:"aliases"`
 }
 
 type getResponse[T any] struct {
@@ -278,6 +290,11 @@ func (manager Manager) Inventory() ([]MailboxResult, error) {
 		return nil, err
 	}
 
+	names, err := manager.domainNamesIfAliased(accounts)
+	if err != nil {
+		return nil, err
+	}
+
 	inventory := make([]MailboxResult, 0, len(accounts))
 	for _, account := range accounts {
 		address := account.EmailAddress
@@ -289,6 +306,7 @@ func (manager Manager) Inventory() ([]MailboxResult, error) {
 			Address: address,
 			ID:      account.ID,
 			Domain:  domain,
+			Aliases: aliasAddresses(account, names),
 			Status:  "active",
 		})
 	}
@@ -377,6 +395,17 @@ func (manager Manager) accounts() ([]accountRecord, error) {
 	return response.List, nil
 }
 
+// rejection is a per-object failure the server reported inside a /set response.
+// It keeps the server's error type so a caller can tell "that address belongs to
+// someone else" from a malformed request without parsing the message.
+type rejection struct {
+	method, kind, description string
+}
+
+func (r *rejection) Error() string {
+	return fmt.Sprintf("mail: %s rejected: %s (%s)", r.method, r.description, r.kind)
+}
+
 func (manager Manager) set(method string, arguments map[string]any) (setResponse, error) {
 	raw, err := manager.invoke(method, arguments)
 	if err != nil {
@@ -392,7 +421,7 @@ func (manager Manager) set(method string, arguments map[string]any) (setResponse
 	// failing the request, so an unchecked call looks like success.
 	for _, failures := range []map[string]methodError{response.NotCreated, response.NotUpdated, response.NotDestroy} {
 		for _, failure := range failures {
-			return response, fmt.Errorf("mail: %s rejected: %s (%s)", method, failure.Description, failure.Type)
+			return response, &rejection{method: method, kind: failure.Type, description: failure.Description}
 		}
 	}
 
@@ -432,4 +461,133 @@ func splitAddress(address string) (string, string, error) {
 	}
 
 	return local, domain, nil
+}
+
+// MaxAliases bounds how many extra addresses one mailbox may carry. A mailbox with
+// hundreds of aliases is a catch-all in disguise, which this command is not.
+const MaxAliases = 20
+
+// ErrAddressInUse is returned when an alias is already taken by another mailbox or
+// alias. The server enforces this across the whole directory.
+var ErrAddressInUse = errors.New("mail: that address is already in use")
+
+// SetAliases makes `aliases` the complete set of extra addresses that deliver to
+// the mailbox, and nothing else. An empty list removes them all.
+//
+// The whole list is written every time, never patched by position: the server's
+// alias list is indexed and re-indexes when an entry is removed, so a patch of
+// "aliases/1" can hit a different entry than the one the caller saw. Writing the
+// full desired list is also what makes a retried command harmless.
+func (manager Manager) SetAliases(address string, aliases []string) (MailboxResult, error) {
+	local, domain, err := splitAddress(address)
+	if err != nil {
+		return MailboxResult{}, err
+	}
+	if len(aliases) > MaxAliases {
+		return MailboxResult{}, fmt.Errorf("mail: a mailbox may have at most %d aliases", MaxAliases)
+	}
+
+	id, err := manager.mailboxID(local, domain)
+	if err != nil {
+		return MailboxResult{}, err
+	}
+
+	own := local + "@" + domain
+	list := map[string]any{}
+	normalised := make([]string, 0, len(aliases))
+	seen := map[string]bool{}
+	for _, raw := range aliases {
+		aliasLocal, aliasDomain, splitErr := splitAddress(raw)
+		if splitErr != nil {
+			return MailboxResult{}, splitErr
+		}
+		alias := aliasLocal + "@" + aliasDomain
+		if alias == own {
+			return MailboxResult{}, errors.New("mail: a mailbox cannot be its own alias")
+		}
+		if seen[alias] {
+			return MailboxResult{}, fmt.Errorf("mail: alias %s is listed twice", alias)
+		}
+		seen[alias] = true
+
+		domainID, findErr := manager.findDomain(aliasDomain)
+		if findErr != nil {
+			return MailboxResult{}, findErr
+		}
+		if domainID == "" {
+			return MailboxResult{}, fmt.Errorf("mail: domain %q is not registered", aliasDomain)
+		}
+		list[strconv.Itoa(len(normalised))] = map[string]any{
+			"name":     aliasLocal,
+			"domainId": domainID,
+			"enabled":  true,
+		}
+		normalised = append(normalised, alias)
+	}
+
+	_, err = manager.set("x:Account/set", map[string]any{
+		"update": map[string]any{id: map[string]any{"aliases": list}},
+	})
+	var rejected *rejection
+	if errors.As(err, &rejected) && rejected.kind == "primaryKeyViolation" {
+		if rejected.description != "" {
+			return MailboxResult{}, fmt.Errorf("%w (%s)", ErrAddressInUse, rejected.description)
+		}
+
+		return MailboxResult{}, ErrAddressInUse
+	}
+	if err != nil {
+		return MailboxResult{}, err
+	}
+
+	return MailboxResult{Address: own, ID: id, Domain: domain, Aliases: normalised, Status: "active"}, nil
+}
+
+// domainNamesIfAliased resolves domain ids to names, but only when some account has
+// aliases: an inventory of plain mailboxes costs no extra call.
+func (manager Manager) domainNamesIfAliased(accounts []accountRecord) (map[string]string, error) {
+	needed := false
+	for _, account := range accounts {
+		if len(account.Aliases) > 0 {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+
+	arguments, err := manager.invoke("x:Domain/get", map[string]any{"ids": nil})
+	if err != nil {
+		return nil, err
+	}
+	var response getResponse[domainRecord]
+	if err := json.Unmarshal(arguments, &response); err != nil {
+		return nil, fmt.Errorf("mail: cannot read the domain list: %w", err)
+	}
+	names := make(map[string]string, len(response.List))
+	for _, record := range response.List {
+		names[record.ID] = record.Name
+	}
+
+	return names, nil
+}
+
+// aliasAddresses lists an account's aliases as addresses, sorted so the inventory is
+// stable between calls.
+func aliasAddresses(account accountRecord, names map[string]string) []string {
+	if len(account.Aliases) == 0 {
+		return nil
+	}
+	addresses := make([]string, 0, len(account.Aliases))
+	for _, alias := range account.Aliases {
+		domain, ok := names[alias.DomainID]
+		if !ok || !alias.Enabled {
+			continue
+		}
+		addresses = append(addresses, strings.ToLower(alias.Name)+"@"+strings.ToLower(domain))
+	}
+	sort.Strings(addresses)
+
+	return addresses
 }

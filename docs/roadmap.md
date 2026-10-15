@@ -102,7 +102,7 @@ backup commands do not satisfy the approved S3 + tier/RPO/RTO commitment.
   retention. This is not the approved S3-backed MVP backup product.
 - Mail command capability when mail is configured: `mail.domain.create`,
   `mail.domain.delete`, `mail.mailbox.create`, `mail.mailbox.set-password`,
-  `mail.mailbox.set-quota`, `mail.mailbox.delete`, and `mail.inventory`.
+  `mail.mailbox.set-quota`, `mail.mailbox.delete`, `mail.alias.set`, and `mail.inventory`.
 - HTTP-01 TLS enablement through `tls.letsencrypt.enable`: Caddy issues and
   renews; the command reports the resulting certificate (issuer, SAN list,
   fingerprint, expiry) without ever reading a key. On a node whose Caddy is
